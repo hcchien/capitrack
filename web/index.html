@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="簡潔、私密、在本機運行的投資組合紀錄工具">
+  <title>CapiTrack｜投資組合紀錄</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#"><span class="brand-mark">C</span><span>CapiTrack</span></a>
+      <nav aria-label="主要導覽">
+        <button class="nav-item active" data-view="overview"><span>⌂</span>投資總覽</button>
+        <button class="nav-item" data-view="transactions"><span>↕</span>交易紀錄</button>
+        <button class="nav-item" data-view="review"><span>◎</span>投資 Review</button>
+        <button class="nav-item" data-view="alerts"><span>◉</span>價格提醒</button>
+        <button class="nav-item" data-view="liabilities"><span>−</span>負債紀錄</button>
+      </nav>
+      <div class="privacy"><span class="status-dot"></span><div><strong>只存在這台電腦</strong><small>資料儲存於本機 SQLite</small></div></div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow" id="eyebrow">PORTFOLIO OVERVIEW</p><h1 id="pageTitle">投資總覽</h1></div>
+        <div class="top-actions">
+          <label class="currency-switch" aria-label="總值顯示幣別"><span>總值</span><select id="baseCurrency"><option value="TWD">TWD</option><option value="USD">USD</option></select></label>
+          <button class="secondary refresh-button" id="refreshPrices">↻ 最新更新</button>
+          <button class="primary" id="addTrade">＋ 新增交易</button>
+        </div>
+      </header>
+
+      <section id="overview" class="view active-view">
+        <div class="hero-card">
+          <div><p>目前淨資產</p><h2 id="totalValue">NT$ 0</h2><div id="totalPnl" class="change neutral">尚無損益</div></div>
+          <div class="hero-meta"><div><span>總資產</span><strong id="grossAssets">NT$ 0</strong></div><div><span>總負債</span><strong id="totalLiabilities">NT$ 0</strong></div><div><span>USD / TWD</span><strong id="fxRate">—</strong></div></div>
+          <div class="orb" aria-hidden="true"></div>
+        </div>
+        <section class="chart-card" aria-labelledby="trendTitle">
+          <div class="chart-head">
+            <div><p class="eyebrow">NET WORTH TREND</p><h3 id="trendTitle">淨資產走勢</h3><p id="chartDelta" class="chart-delta">從現在開始記錄淨資產變化</p></div>
+            <div class="range-tabs" role="group" aria-label="圖表時間範圍">
+              <button data-range="7D">7天</button><button data-range="1M" class="active">1月</button><button data-range="3M">3月</button><button data-range="ALL">全部</button>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="portfolioChart" role="img" aria-label="淨資產價值隨時間變化的互動折線圖"></canvas>
+            <div id="chartTooltip" class="chart-tooltip" hidden><strong></strong><span></span></div>
+            <div id="chartEmpty" class="chart-empty" hidden>更新行情或新增交易後，資產走勢會開始累積。</div>
+          </div>
+        </section>
+        <section class="attribution-card" aria-labelledby="attributionTitle">
+          <div class="chart-head">
+            <div><p class="eyebrow">PERFORMANCE ATTRIBUTION</p><h3 id="attributionTitle">誰帶來了這段成長？</h3><p class="chart-delta">投資損益與資金／負債變動分開計算</p></div>
+            <div class="range-tabs attribution-ranges" role="group" aria-label="績效歸因時間範圍">
+              <button data-attribution-range="1M">1月</button><button data-attribution-range="3M">3月</button><button data-attribution-range="1Y" class="active">1年</button><button data-attribution-range="ALL">全部</button>
+            </div>
+          </div>
+          <div class="attribution-summary">
+            <div><span>淨資產變化</span><strong id="attributionTotal">—</strong></div>
+            <div><span>投資損益</span><strong id="attributionProfit">—</strong></div>
+            <div><span>資金／負債變動</span><strong id="attributionFlow">—</strong></div>
+          </div>
+          <div id="attributionList" class="attribution-list"></div>
+        </section>
+        <div class="section-heading"><div><p class="eyebrow">YOUR ASSETS</p><h3>目前持股</h3></div><span id="holdingCount" class="count">0 個項目</span></div>
+        <div id="holdings" class="holdings-grid"></div>
+      </section>
+
+      <section id="transactions" class="view">
+        <div class="filterbar">
+          <label>投資標的<select id="filterSymbol"><option value="">全部標的</option></select></label>
+          <label>開始日期<input type="date" id="filterFrom"></label>
+          <label>結束日期<input type="date" id="filterTo"></label>
+          <button class="secondary" id="clearFilters">清除篩選</button>
+        </div>
+        <div class="table-card"><table><thead><tr><th>日期</th><th>標的</th><th>類型</th><th>數量</th><th>成交價</th><th>總額</th><th></th></tr></thead><tbody id="transactionRows"></tbody></table></div>
+      </section>
+
+      <section id="review" class="view">
+        <div class="review-intro"><p class="eyebrow">DECISION REVIEW</p><h2>回頭看，每一筆選擇。</h2><p>用時間與標的重新閱讀自己的投資決策，而不只看最終漲跌。</p></div>
+        <div id="reviewList" class="review-list"></div>
+      </section>
+      <section id="alerts" class="view">
+        <div class="alert-toolbar"><div><p class="eyebrow">PRICE ALERTS</p><h2>價格提醒</h2><p>伺服器運行時每 5 分鐘檢查；移動停損只會隨新高往上調整。</p></div><div class="top-actions"><button class="secondary" id="enableNotifications">允許系統通知</button><button class="secondary" id="checkAlerts">立即檢查</button><button class="primary" id="addAlert">＋ 新增提醒</button></div></div>
+        <div class="section-heading"><div><p class="eyebrow">ACTIVE RULES</p><h3>提醒規則</h3></div></div><div id="alertList" class="alert-list"></div>
+        <div class="section-heading"><div><p class="eyebrow">TRIGGER HISTORY</p><h3>觸發紀錄</h3></div></div><div id="alertEvents" class="alert-list"></div>
+      </section>
+      <section id="liabilities" class="view"><div class="alert-toolbar"><div><p class="eyebrow">LIABILITIES</p><h2>負債紀錄</h2><p>記錄借款、利息與還款，淨資產會自動扣除目前負債。</p></div><div class="top-actions"><button class="secondary" id="addLiabilityTx">＋ 記錄異動</button><button class="primary" id="addLiability">＋ 新增負債</button></div></div><div class="section-heading"><div><p class="eyebrow">CURRENT BALANCE</p><h3>目前負債</h3></div><span id="liabilityTotal" class="count"></span></div><div id="liabilityList" class="alert-list"></div><div class="section-heading"><div><p class="eyebrow">LIABILITY LEDGER</p><h3>負債異動</h3></div></div><div class="table-card"><table><thead><tr><th>日期</th><th>負債</th><th>類型</th><th>金額</th><th>備註</th><th></th></tr></thead><tbody id="liabilityRows"></tbody></table></div></section>
+    </main>
+  </div>
+
+  <dialog id="tradeDialog">
+    <form id="tradeForm">
+      <div class="dialog-head"><div><p class="eyebrow">TRANSACTION</p><h2 id="dialogTitle">新增交易</h2></div><button type="button" class="icon-button" id="closeDialog" aria-label="關閉">×</button></div>
+      <input type="hidden" id="tradeId">
+      <div class="type-toggle"><label><input type="radio" name="type" value="buy" checked><span>買入</span></label><label><input type="radio" name="type" value="sell"><span>賣出</span></label></div>
+      <div class="form-grid">
+        <label>投資類型<select id="assetType"><option value="stock">股票／ETF</option><option value="warrant">美股權證</option></select></label>
+        <label>市場<select id="market" required><option value="TW">台股</option><option value="US">美股</option></select></label>
+        <label>交易幣別<select id="currency" required><option value="TWD">TWD 台幣</option><option value="USD">USD 美金</option></select></label>
+        <label class="full ticker-field">搜尋股票代號或名稱<input id="symbol" required autocomplete="off" placeholder="例如：2330、台積電、AAPL"><span class="field-hint">輸入後會自動搜尋 ticker 與公司名稱</span><div id="tickerResults" class="autocomplete" hidden></div></label>
+        <label class="full">名稱<input id="name" required placeholder="選擇搜尋結果後自動帶入"></label>
+        <div id="warrantFields" class="full warrant-fields" hidden><label>連結標的<input id="underlyingSymbol" placeholder="例如 AAPL"></label><label>權證類型<select id="warrantType"><option value="call">Call</option><option value="put">Put</option></select></label><label>到期日<input id="expiryDate" type="date"></label><label>履約價<input id="strikePrice" type="number" min="0" step="any"></label><label>行使比例<input id="exerciseRatio" type="number" min="0" step="any" placeholder="例如 1"></label></div>
+        <label>數量<input id="quantity" required type="number" min="0.000001" step="any" placeholder="0"></label>
+        <label>每單位價格<input id="price" required type="number" min="0" step="any" placeholder="0"></label>
+        <label>交易日期<input id="tradedAt" required type="date"></label>
+        <label>手續費<input id="fee" type="number" min="0" step="any" value="0"></label>
+        <label class="full">當時的想法／備註<textarea id="note" rows="3" placeholder="為什麼做這筆交易？"></textarea></label>
+      </div>
+      <div class="dialog-actions"><button type="button" class="secondary" id="cancelDialog">取消</button><button type="submit" class="primary">儲存交易</button></div>
+    </form>
+  </dialog>
+  <dialog id="alertDialog"><form id="alertForm"><div class="dialog-head"><div><p class="eyebrow">PRICE ALERT</p><h2>新增提醒</h2></div><button type="button" class="icon-button" id="closeAlertDialog">×</button></div><div class="form-grid"><label class="full">投資標的<select id="alertSymbol" required></select></label><label class="full">條件<select id="alertRule"><option value="price_below">價格跌到指定值（購入提醒）</option><option value="price_above">價格漲到指定值</option><option value="cost_loss_pct">成本停損比例</option><option value="cost_profit_pct">成本停利比例</option><option value="trailing_stop_pct">移動停損比例</option></select></label><label class="full"><span id="alertValueLabel">目標價格</span><input id="alertValue" type="number" min="0.000001" step="any" required></label><label class="full check-label"><input id="alertOneShot" type="checkbox" checked> 觸發一次後停用</label></div><div class="dialog-actions"><button type="button" class="secondary" id="cancelAlertDialog">取消</button><button type="submit" class="primary">建立提醒</button></div></form></dialog>
+  <dialog id="liabilityDialog"><form id="liabilityForm"><div class="dialog-head"><div><p class="eyebrow">LIABILITY</p><h2>新增負債</h2></div><button type="button" class="icon-button" data-close-liability>×</button></div><div class="form-grid"><label class="full">名稱<input id="liabilityName" required placeholder="例如：房貸、信用貸款"></label><label>類別<select id="liabilityCategory"><option value="mortgage">房貸</option><option value="loan">貸款</option><option value="credit_card">信用卡</option><option value="other">其他</option></select></label><label>幣別<select id="liabilityCurrency"><option value="TWD">TWD</option><option value="USD">USD</option></select></label><label>期初餘額<input id="liabilityInitial" type="number" min="0" step="any" required></label><label>年利率（%）<input id="liabilityRate" type="number" min="0" step="any" value="0"></label><label class="full">備註<textarea id="liabilityNote" rows="3"></textarea></label></div><div class="dialog-actions"><button type="button" class="secondary" data-close-liability>取消</button><button type="submit" class="primary">建立負債</button></div></form></dialog>
+  <dialog id="liabilityTxDialog"><form id="liabilityTxForm"><div class="dialog-head"><div><p class="eyebrow">LIABILITY ENTRY</p><h2>記錄負債異動</h2></div><button type="button" class="icon-button" data-close-liability-tx>×</button></div><div class="form-grid"><label class="full">負債項目<select id="liabilityTxLiability" required></select></label><label>異動類型<select id="liabilityTxType"><option value="repay">還款（減少）</option><option value="borrow">新增借款（增加）</option><option value="interest">利息（增加）</option><option value="adjustment">其他增加</option></select></label><label>金額<input id="liabilityTxAmount" type="number" min="0.000001" step="any" required></label><label>日期<input id="liabilityTxDate" type="date" required></label><label class="full">備註<textarea id="liabilityTxNote" rows="3"></textarea></label></div><div class="dialog-actions"><button type="button" class="secondary" data-close-liability-tx>取消</button><button type="submit" class="primary">儲存異動</button></div></form></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
