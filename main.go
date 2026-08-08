@@ -54,6 +54,7 @@ type holding struct {
 	MarketValue      float64 `json:"marketValue"`
 	CostBasis        float64 `json:"costBasis"`
 	Unrealized       float64 `json:"unrealized"`
+	UnrealizedLocal  float64 `json:"unrealizedLocal"`
 	UnrealizedPC     float64 `json:"unrealizedPercent"`
 	Realized         float64 `json:"realized"`
 	Allocation       float64 `json:"allocation"`
@@ -125,6 +126,8 @@ func main() {
 	mux.HandleFunc("GET /api/cash-accounts", a.listCashAccounts)
 	mux.HandleFunc("POST /api/cash-accounts", a.createCashAccount)
 	mux.HandleFunc("DELETE /api/cash-accounts/{id}", a.deleteCashAccount)
+	mux.HandleFunc("POST /api/cash-accounts/{id}/adjust", a.adjustCashAccount)
+	mux.HandleFunc("PUT /api/cash-accounts/{id}/visibility", a.setCashAccountVisibility)
 	mux.HandleFunc("GET /api/cash-transactions", a.listCashTransactions)
 	mux.HandleFunc("POST /api/cash-transactions", a.createCashTransaction)
 	mux.HandleFunc("DELETE /api/cash-transactions/{id}", a.deleteCashTransaction)
@@ -282,6 +285,9 @@ func migrate(db *sql.DB) error {
 		}
 	}
 	if err := ensureColumn(db, "transactions", "position_action", `ALTER TABLE transactions ADD COLUMN position_action TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "cash_accounts", "hidden", `ALTER TABLE cash_accounts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
 	return nil
@@ -456,6 +462,7 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 			h.MarketValue = convert(localValue, h.Currency)
 			h.CostBasis = convert(localCost, h.Currency)
 			h.Unrealized = convert(localUnrealized, h.Currency)
+			h.UnrealizedLocal = localUnrealized
 			h.Realized = convert(h.Realized, h.Currency)
 			totalValue += h.MarketValue
 			totalCost += h.CostBasis
@@ -468,6 +475,7 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 			holdings[i].Allocation = holdings[i].MarketValue / totalValue * 100
 		}
 	}
+	totalInvestmentValue := totalValue
 	liabilities, err := a.calculateLiabilities(baseCurrency, usdTwd)
 	if err != nil {
 		return portfolioResult{}, err
@@ -486,8 +494,8 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 	}
 	totalValue += totalCash
 	return portfolioResult{Holdings: holdings, Summary: portfolioSummary{
-		TotalValue: totalValue, TotalCash: totalCash, TotalLiabilities: totalLiabilities, NetWorth: totalValue - totalLiabilities, TotalCost: totalCost, Unrealized: totalValue - totalCost,
-		UnrealizedPercent: percent(totalValue-totalCost, totalCost), Realized: totalRealized,
+		TotalValue: totalValue, TotalCash: totalCash, TotalLiabilities: totalLiabilities, NetWorth: totalValue - totalLiabilities, TotalCost: totalCost, Unrealized: totalInvestmentValue - totalCost,
+		UnrealizedPercent: percent(totalInvestmentValue-totalCost, totalCost), Realized: totalRealized,
 	}, BaseCurrency: baseCurrency, USDTWD: usdTwd, LastUpdated: lastUpdated}, rows.Err()
 }
 
@@ -724,12 +732,15 @@ func (a *app) portfolioHistory(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) getPortfolioHistory(requestedRange string) (portfolioHistoryResult, error) {
 	rangeName := strings.ToUpper(requestedRange)
-	days := map[string]int{"7D": 7, "1M": 30, "3M": 90}
+	days := map[string]int{"7D": 7, "1M": 30, "3M": 90, "1Y": 365}
 	query := `SELECT s.captured_at,s.total_twd,s.usd_twd FROM portfolio_snapshots s JOIN (SELECT substr(captured_at,1,10) AS snapshot_day,MAX(captured_at) AS latest_captured_at FROM portfolio_snapshots`
 	args := []any{}
 	if dayCount, ok := days[rangeName]; ok {
 		query += ` WHERE captured_at>=?`
 		args = append(args, time.Now().AddDate(0, 0, -dayCount).Format(time.RFC3339))
+	} else if rangeName == "YTD" {
+		query += ` WHERE captured_at>=?`
+		args = append(args, time.Date(time.Now().Year(), time.January, 1, 0, 0, 0, 0, time.Local).Format(time.RFC3339))
 	}
 	query += ` GROUP BY snapshot_day) daily ON s.captured_at=daily.latest_captured_at ORDER BY s.captured_at ASC`
 	baseCurrency, _, _, err := a.portfolioSettings()

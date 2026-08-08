@@ -37,12 +37,15 @@
 .warrants-table table { min-width: 820px; }
 .warrants-table th:nth-child(n+2), .warrants-table td:nth-child(n+2) { text-align: right; white-space: nowrap; }
 .warrants-table td:first-child small { color: var(--muted); font: 10px var(--mono); }
+.expiry-warning { color: #c2410c; font: 700 16px/1 var(--sans); vertical-align: -1px; }
+.expiry-warning.expired { color: #b91c1c; }
 .crypto-section { margin: 0 0 42px; }
 .crypto-section .section-heading { margin: 0 0 18px; }
 .cash-overview-section { margin: 0 0 42px; }
 .cash-overview-section .section-heading { margin: 0 0 18px; }
 .cash-overview-table th:nth-child(n+2), .cash-overview-table td:nth-child(n+2) { white-space: nowrap; }
 .cash-overview-table th:nth-child(n+2), .cash-overview-table td:nth-child(2), .cash-overview-table td:nth-child(3), .cash-overview-table td:nth-child(4) { text-align: right; }
+.cash-overview-table .is-hidden { opacity: .55; }
 .liability-overview-section { margin: 0 0 42px; }
 .liability-overview-section .section-heading { margin: 0 0 18px; }
 .liability-overview-table th:nth-child(n+2), .liability-overview-table td:nth-child(n+2) { text-align: right; white-space: nowrap; }
@@ -51,4 +54,9 @@
 .filterbar label { min-width: 0; }
 .filterbar select, .filterbar input { width: 100%; min-width: 0; }
 .filterbar button { white-space: nowrap; }
+.pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 14px; }
+.pagination-actions { display: flex; align-items: center; gap: 9px; }
+.pagination-actions .secondary { padding: 8px 12px; }
+.pagination button:disabled { cursor: not-allowed; opacity: .45; }
 @media (max-width: 760px) { .filterbar { grid-template-columns: 1fr; } .filterbar button { width: 100%; } }
+@media (max-width: 760px) { .pagination { align-items: flex-start; flex-direction: column; } }

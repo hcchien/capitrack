@@ -98,6 +98,7 @@ CapiTrack 使用官方 Go SDK，提供完整對應網站功能的三十個 MCP t
 - `add_liability_transaction`：新增借款、還款、利息或調整
 - `delete_liability_transaction`：刪除負債異動
 - `list_cash_accounts`、`create_cash_account`、`delete_cash_account`：管理現金帳戶
+- `set_cash_account_balance`、`set_cash_account_visibility`：直接修改帳戶餘額，或隱藏／顯示帳戶
 - `list_cash_transactions`、`add_cash_transaction`、`delete_cash_transaction`：管理現金流水
 
 網站啟動後，Streamable HTTP MCP endpoint 位於：

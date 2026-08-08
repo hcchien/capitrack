@@ -18,6 +18,7 @@ type cashAccount struct {
 	Balance        float64 `json:"balance"`
 	BalanceBase    float64 `json:"balanceBase"`
 	Note           string  `json:"note"`
+	Hidden         bool    `json:"hidden"`
 	CreatedAt      string  `json:"createdAt,omitempty"`
 }
 type cashTransaction struct {
@@ -31,9 +32,14 @@ type cashTransaction struct {
 	Note      string  `json:"note"`
 	CreatedAt string  `json:"createdAt,omitempty"`
 }
+type cashBalanceAdjustment struct {
+	Balance  float64 `json:"balance"`
+	TradedAt string  `json:"tradedAt"`
+	Note     string  `json:"note"`
+}
 
 func (a *app) calculateCashAccounts(base string, usdTwd float64) ([]cashAccount, error) {
-	rows, err := a.db.Query(`SELECT c.id,c.name,c.currency,c.initial_balance,c.note,c.created_at,
+	rows, err := a.db.Query(`SELECT c.id,c.name,c.currency,c.initial_balance,c.note,c.hidden,c.created_at,
 		c.initial_balance+COALESCE(SUM(CASE WHEN t.type IN ('deposit','dividend','interest','adjustment') THEN t.amount WHEN t.type IN ('withdrawal','fee') THEN -t.amount ELSE 0 END),0)
 		FROM cash_accounts c LEFT JOIN cash_transactions t ON t.account_id=c.id GROUP BY c.id ORDER BY c.created_at DESC,c.id DESC`)
 	if err != nil {
@@ -43,7 +49,7 @@ func (a *app) calculateCashAccounts(base string, usdTwd float64) ([]cashAccount,
 	items := []cashAccount{}
 	for rows.Next() {
 		var x cashAccount
-		if err := rows.Scan(&x.ID, &x.Name, &x.Currency, &x.InitialBalance, &x.Note, &x.CreatedAt, &x.Balance); err != nil {
+		if err := rows.Scan(&x.ID, &x.Name, &x.Currency, &x.InitialBalance, &x.Note, &x.Hidden, &x.CreatedAt, &x.Balance); err != nil {
 			return nil, err
 		}
 		x.BalanceBase = convertCurrency(x.Balance, x.Currency, base, usdTwd)
@@ -70,7 +76,7 @@ func validateCashTransaction(x *cashTransaction) error {
 	x.Type = strings.ToLower(strings.TrimSpace(x.Type))
 	x.Note = strings.TrimSpace(x.Note)
 	valid := map[string]bool{"deposit": true, "withdrawal": true, "dividend": true, "interest": true, "fee": true, "adjustment": true}
-	if x.AccountID <= 0 || !valid[x.Type] || x.Amount <= 0 {
+	if x.AccountID <= 0 || !valid[x.Type] || x.Amount == 0 || (x.Type != "adjustment" && x.Amount < 0) {
 		return errors.New("現金流水內容不正確")
 	}
 	if _, err := time.Parse("2006-01-02", x.TradedAt); err != nil {
@@ -189,4 +195,78 @@ func (a *app) deleteCashTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = a.recordSnapshot()
 	w.WriteHeader(204)
+}
+
+func (a *app) adjustCashAccountBalance(id int64, input cashBalanceAdjustment) (cashTransaction, error) {
+	if id <= 0 || input.Balance < 0 {
+		return cashTransaction{}, errors.New("帳戶或餘額不正確")
+	}
+	if _, err := time.Parse("2006-01-02", input.TradedAt); err != nil {
+		return cashTransaction{}, errors.New("流水日期不正確")
+	}
+	var current float64
+	err := a.db.QueryRow(`SELECT c.initial_balance+COALESCE(SUM(CASE WHEN t.type IN ('deposit','dividend','interest','adjustment') THEN t.amount WHEN t.type IN ('withdrawal','fee') THEN -t.amount ELSE 0 END),0) FROM cash_accounts c LEFT JOIN cash_transactions t ON t.account_id=c.id WHERE c.id=? GROUP BY c.id`, id).Scan(&current)
+	if err != nil {
+		return cashTransaction{}, err
+	}
+	delta := input.Balance - current
+	if delta == 0 {
+		return cashTransaction{}, errors.New("目前餘額沒有變化")
+	}
+	typeName, amount := "adjustment", delta
+	if delta < 0 {
+		typeName, amount = "withdrawal", -delta
+	}
+	item := cashTransaction{AccountID: id, Type: typeName, Amount: amount, TradedAt: input.TradedAt, Note: strings.TrimSpace(input.Note)}
+	result, err := a.db.Exec(`INSERT INTO cash_transactions(account_id,type,amount,traded_at,note) VALUES(?,?,?,?,?)`, item.AccountID, item.Type, item.Amount, item.TradedAt, item.Note)
+	if err != nil {
+		return cashTransaction{}, err
+	}
+	item.ID, _ = result.LastInsertId()
+	_ = a.recordSnapshot()
+	return item, nil
+}
+
+func (a *app) setCashAccountVisibility(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		fail(w, err, 400)
+		return
+	}
+	var body struct {
+		Hidden bool `json:"hidden"`
+	}
+	if err = json.NewDecoder(r.Body).Decode(&body); err != nil {
+		fail(w, err, 400)
+		return
+	}
+	result, err := a.db.Exec(`UPDATE cash_accounts SET hidden=? WHERE id=?`, body.Hidden, id)
+	if err != nil {
+		fail(w, err, 500)
+		return
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		fail(w, sql.ErrNoRows, 404)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (a *app) adjustCashAccount(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		fail(w, err, 400)
+		return
+	}
+	var input cashBalanceAdjustment
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		fail(w, err, 400)
+		return
+	}
+	item, err := a.adjustCashAccountBalance(id, input)
+	if err != nil {
+		fail(w, err, 400)
+		return
+	}
+	writeJSON(w, item)
 }

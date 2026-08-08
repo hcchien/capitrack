@@ -44,7 +44,7 @@ type priceInput struct {
 }
 
 type rangeInput struct {
-	Range string `json:"range,omitempty" jsonschema:"時間範圍；走勢可用 7D、1M、3M、ALL，績效歸因可用 1M、3M、1Y、ALL"`
+	Range string `json:"range,omitempty" jsonschema:"時間範圍；走勢可用 7D、1M、3M、YTD、1Y、ALL，績效歸因可用 1M、3M、1Y、ALL"`
 }
 
 type searchAssetsInput struct {
@@ -119,6 +119,16 @@ type cashTransactionInput struct {
 	Amount    float64 `json:"amount"`
 	TradedAt  string  `json:"tradedAt"`
 	Note      string  `json:"note,omitempty"`
+}
+type cashBalanceAdjustmentInput struct {
+	AccountID int64   `json:"accountId" jsonschema:"要修改的現金帳戶 ID"`
+	Balance   float64 `json:"balance" jsonschema:"修改後的目前餘額，不可小於零"`
+	TradedAt  string  `json:"tradedAt" jsonschema:"修改日期，格式 YYYY-MM-DD"`
+	Note      string  `json:"note,omitempty" jsonschema:"調整原因或備註"`
+}
+type cashAccountVisibilityInput struct {
+	AccountID int64 `json:"accountId"`
+	Hidden    bool  `json:"hidden"`
 }
 type cashAccountsOutput struct {
 	Accounts []cashAccount `json:"accounts"`
@@ -250,6 +260,20 @@ func (a *app) newMCPServer() *mcp.Server {
 		}
 		_ = a.recordSnapshot()
 		return nil, mutationOutput{Success: true, Message: "現金帳戶已刪除"}, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "set_cash_account_balance", Description: "直接修改現金帳戶目前餘額；系統會自動建立一筆 adjustment 流水以保留紀錄。"}, func(ctx context.Context, req *mcp.CallToolRequest, input cashBalanceAdjustmentInput) (*mcp.CallToolResult, cashTransaction, error) {
+		item, err := a.adjustCashAccountBalance(input.AccountID, cashBalanceAdjustment{Balance: input.Balance, TradedAt: input.TradedAt, Note: input.Note})
+		return nil, item, err
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "set_cash_account_visibility", Description: "隱藏或顯示現金帳戶；隱藏只影響總覽呈現，不影響資產總額。"}, func(ctx context.Context, req *mcp.CallToolRequest, input cashAccountVisibilityInput) (*mcp.CallToolResult, mutationOutput, error) {
+		result, err := a.db.ExecContext(ctx, `UPDATE cash_accounts SET hidden=? WHERE id=?`, input.Hidden, input.AccountID)
+		if err != nil {
+			return nil, mutationOutput{}, err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			return nil, mutationOutput{}, sql.ErrNoRows
+		}
+		return nil, mutationOutput{Success: true, Message: "帳戶顯示設定已更新"}, nil
 	})
 	mcp.AddTool(server, &mcp.Tool{Name: "list_cash_transactions", Description: "列出所有帳戶現金流水。", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, cashTransactionsOutput, error) {
 		items, err := a.queryCashTransactions()
