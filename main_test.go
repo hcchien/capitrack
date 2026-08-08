@@ -199,6 +199,39 @@ func TestPortfolioConvertsCurrencies(t *testing.T) {
 	}
 }
 
+func TestLiabilitiesReduceNetWorth(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{db: db}
+	tx := transaction{Symbol: "AAPL", Name: "Apple", Market: "US", Currency: "USD", Type: "buy", Quantity: 10, Price: 100, TradedAt: "2026-08-08"}
+	if err := a.insertTransaction(&tx); err != nil {
+		t.Fatal(err)
+	}
+	result, err := db.Exec(`INSERT INTO liabilities(name,category,currency,initial_balance,interest_rate,note) VALUES('房貸','mortgage','TWD',10000,2,'')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := result.LastInsertId()
+	_, err = db.Exec(`INSERT INTO liability_transactions(liability_id,type,amount,traded_at,note) VALUES(?,?,?,?,?)`, id, "repay", 1000, "2026-08-08", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	portfolio, err := a.calculatePortfolio()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if portfolio.Summary.TotalValue != 30000 || portfolio.Summary.TotalLiabilities != 9000 || portfolio.Summary.NetWorth != 21000 {
+		t.Fatalf("unexpected summary: %#v", portfolio.Summary)
+	}
+}
+
 func TestPortfolioSnapshot(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

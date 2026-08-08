@@ -19,6 +19,7 @@
         <button class="nav-item" data-view="transactions"><span>↕</span>交易紀錄</button>
         <button class="nav-item" data-view="review"><span>◎</span>投資 Review</button>
         <button class="nav-item" data-view="alerts"><span>◉</span>價格提醒</button>
+        <button class="nav-item" data-view="liabilities"><span>−</span>負債紀錄</button>
       </nav>
       <div class="privacy"><span class="status-dot"></span><div><strong>只存在這台電腦</strong><small>資料儲存於本機 SQLite</small></div></div>
     </aside>
@@ -35,34 +36,34 @@
 
       <section id="overview" class="view active-view">
         <div class="hero-card">
-          <div><p>目前總資產</p><h2 id="totalValue">NT$ 0</h2><div id="totalPnl" class="change neutral">尚無損益</div></div>
-          <div class="hero-meta"><div><span>投入成本</span><strong id="totalCost">NT$ 0</strong></div><div><span>已實現損益</span><strong id="realized">NT$ 0</strong></div><div><span>USD / TWD</span><strong id="fxRate">—</strong></div></div>
+          <div><p>目前淨資產</p><h2 id="totalValue">NT$ 0</h2><div id="totalPnl" class="change neutral">尚無損益</div></div>
+          <div class="hero-meta"><div><span>總資產</span><strong id="grossAssets">NT$ 0</strong></div><div><span>總負債</span><strong id="totalLiabilities">NT$ 0</strong></div><div><span>USD / TWD</span><strong id="fxRate">—</strong></div></div>
           <div class="orb" aria-hidden="true"></div>
         </div>
         <section class="chart-card" aria-labelledby="trendTitle">
           <div class="chart-head">
-            <div><p class="eyebrow">PORTFOLIO TREND</p><h3 id="trendTitle">總資產走勢</h3><p id="chartDelta" class="chart-delta">從現在開始記錄資產變化</p></div>
+            <div><p class="eyebrow">NET WORTH TREND</p><h3 id="trendTitle">淨資產走勢</h3><p id="chartDelta" class="chart-delta">從現在開始記錄淨資產變化</p></div>
             <div class="range-tabs" role="group" aria-label="圖表時間範圍">
               <button data-range="7D">7天</button><button data-range="1M" class="active">1月</button><button data-range="3M">3月</button><button data-range="ALL">全部</button>
             </div>
           </div>
           <div class="chart-wrap">
-            <canvas id="portfolioChart" role="img" aria-label="總資產價值隨時間變化的互動折線圖"></canvas>
+            <canvas id="portfolioChart" role="img" aria-label="淨資產價值隨時間變化的互動折線圖"></canvas>
             <div id="chartTooltip" class="chart-tooltip" hidden><strong></strong><span></span></div>
             <div id="chartEmpty" class="chart-empty" hidden>更新行情或新增交易後，資產走勢會開始累積。</div>
           </div>
         </section>
         <section class="attribution-card" aria-labelledby="attributionTitle">
           <div class="chart-head">
-            <div><p class="eyebrow">PERFORMANCE ATTRIBUTION</p><h3 id="attributionTitle">誰帶來了這段成長？</h3><p class="chart-delta">投資損益與資金投入分開計算</p></div>
+            <div><p class="eyebrow">PERFORMANCE ATTRIBUTION</p><h3 id="attributionTitle">誰帶來了這段成長？</h3><p class="chart-delta">投資損益與資金／負債變動分開計算</p></div>
             <div class="range-tabs attribution-ranges" role="group" aria-label="績效歸因時間範圍">
               <button data-attribution-range="1M">1月</button><button data-attribution-range="3M">3月</button><button data-attribution-range="1Y" class="active">1年</button><button data-attribution-range="ALL">全部</button>
             </div>
           </div>
           <div class="attribution-summary">
-            <div><span>總資產變化</span><strong id="attributionTotal">—</strong></div>
+            <div><span>淨資產變化</span><strong id="attributionTotal">—</strong></div>
             <div><span>投資損益</span><strong id="attributionProfit">—</strong></div>
-            <div><span>淨投入／提出</span><strong id="attributionFlow">—</strong></div>
+            <div><span>資金／負債變動</span><strong id="attributionFlow">—</strong></div>
           </div>
           <div id="attributionList" class="attribution-list"></div>
         </section>
@@ -89,6 +90,7 @@
         <div class="section-heading"><div><p class="eyebrow">ACTIVE RULES</p><h3>提醒規則</h3></div></div><div id="alertList" class="alert-list"></div>
         <div class="section-heading"><div><p class="eyebrow">TRIGGER HISTORY</p><h3>觸發紀錄</h3></div></div><div id="alertEvents" class="alert-list"></div>
       </section>
+      <section id="liabilities" class="view"><div class="alert-toolbar"><div><p class="eyebrow">LIABILITIES</p><h2>負債紀錄</h2><p>記錄借款、利息與還款，淨資產會自動扣除目前負債。</p></div><div class="top-actions"><button class="secondary" id="addLiabilityTx">＋ 記錄異動</button><button class="primary" id="addLiability">＋ 新增負債</button></div></div><div class="section-heading"><div><p class="eyebrow">CURRENT BALANCE</p><h3>目前負債</h3></div><span id="liabilityTotal" class="count"></span></div><div id="liabilityList" class="alert-list"></div><div class="section-heading"><div><p class="eyebrow">LIABILITY LEDGER</p><h3>負債異動</h3></div></div><div class="table-card"><table><thead><tr><th>日期</th><th>負債</th><th>類型</th><th>金額</th><th>備註</th><th></th></tr></thead><tbody id="liabilityRows"></tbody></table></div></section>
     </main>
   </div>
 
@@ -114,6 +116,8 @@
     </form>
   </dialog>
   <dialog id="alertDialog"><form id="alertForm"><div class="dialog-head"><div><p class="eyebrow">PRICE ALERT</p><h2>新增提醒</h2></div><button type="button" class="icon-button" id="closeAlertDialog">×</button></div><div class="form-grid"><label class="full">投資標的<select id="alertSymbol" required></select></label><label class="full">條件<select id="alertRule"><option value="price_below">價格跌到指定值（購入提醒）</option><option value="price_above">價格漲到指定值</option><option value="cost_loss_pct">成本停損比例</option><option value="cost_profit_pct">成本停利比例</option><option value="trailing_stop_pct">移動停損比例</option></select></label><label class="full"><span id="alertValueLabel">目標價格</span><input id="alertValue" type="number" min="0.000001" step="any" required></label><label class="full check-label"><input id="alertOneShot" type="checkbox" checked> 觸發一次後停用</label></div><div class="dialog-actions"><button type="button" class="secondary" id="cancelAlertDialog">取消</button><button type="submit" class="primary">建立提醒</button></div></form></dialog>
+  <dialog id="liabilityDialog"><form id="liabilityForm"><div class="dialog-head"><div><p class="eyebrow">LIABILITY</p><h2>新增負債</h2></div><button type="button" class="icon-button" data-close-liability>×</button></div><div class="form-grid"><label class="full">名稱<input id="liabilityName" required placeholder="例如：房貸、信用貸款"></label><label>類別<select id="liabilityCategory"><option value="mortgage">房貸</option><option value="loan">貸款</option><option value="credit_card">信用卡</option><option value="other">其他</option></select></label><label>幣別<select id="liabilityCurrency"><option value="TWD">TWD</option><option value="USD">USD</option></select></label><label>期初餘額<input id="liabilityInitial" type="number" min="0" step="any" required></label><label>年利率（%）<input id="liabilityRate" type="number" min="0" step="any" value="0"></label><label class="full">備註<textarea id="liabilityNote" rows="3"></textarea></label></div><div class="dialog-actions"><button type="button" class="secondary" data-close-liability>取消</button><button type="submit" class="primary">建立負債</button></div></form></dialog>
+  <dialog id="liabilityTxDialog"><form id="liabilityTxForm"><div class="dialog-head"><div><p class="eyebrow">LIABILITY ENTRY</p><h2>記錄負債異動</h2></div><button type="button" class="icon-button" data-close-liability-tx>×</button></div><div class="form-grid"><label class="full">負債項目<select id="liabilityTxLiability" required></select></label><label>異動類型<select id="liabilityTxType"><option value="repay">還款（減少）</option><option value="borrow">新增借款（增加）</option><option value="interest">利息（增加）</option><option value="adjustment">其他增加</option></select></label><label>金額<input id="liabilityTxAmount" type="number" min="0.000001" step="any" required></label><label>日期<input id="liabilityTxDate" type="date" required></label><label class="full">備註<textarea id="liabilityTxNote" rows="3"></textarea></label></div><div class="dialog-actions"><button type="button" class="secondary" data-close-liability-tx>取消</button><button type="submit" class="primary">儲存異動</button></div></form></dialog>
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>

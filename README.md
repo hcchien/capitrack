@@ -41,6 +41,8 @@ go run .
 - 美股權證交易：記錄連結標的、Call／Put、到期日、履約價與行使比例
 - 固定價格、成本停損／停利比例，以及只隨新高上調的移動停損提醒
 - 瀏覽器系統通知、觸發紀錄與每 5 分鐘背景檢查（本機服務需保持運行）
+- 負債紀錄：房貸、貸款、信用卡或其他負債，可記錄借款、利息與還款
+- 淨資產總覽與走勢：總資產扣除 TWD／USD 負債後自動換算
 
 總資產走勢從啟用此版本後開始累積。新增或修改交易、更新價格及同步最新行情時，系統都會在 SQLite 保存一筆資產快照；滑鼠移動或觸控圖表可查看各時間點的精確總值。
 
@@ -56,6 +58,10 @@ go run .
 
 新增交易時選擇「美股權證」，市場與幣別會固定為 US／USD。除了 ticker 與成交資料，也必須填寫連結標的、Call／Put、到期日、履約價與行使比例。權證和股票共用持股、總值、走勢、績效歸因及提醒功能。
 
+## 負債紀錄
+
+負債可使用 TWD 或 USD，並記錄分類、期初餘額、年利率與備註。之後透過負債異動新增借款、利息或其他增加，也可用還款降低餘額；餘額最低以零計算。投資總覽會分別顯示總資產、總負債與淨資產，資產走勢圖則記錄淨資產變化。
+
 ## 行情資料
 
 - 台股清單與名稱：臺灣證券交易所、證券櫃檯買賣中心公開資料
@@ -67,7 +73,7 @@ go run .
 
 ## MCP
 
-CapiTrack 使用官方 Go SDK，提供十五個 MCP tools：
+CapiTrack 使用官方 Go SDK，提供十九個 MCP tools：
 
 - `get_portfolio`：讀取目前持股、總值、成本與損益
 - `get_portfolio_history`：讀取指定期間的總資產走勢
@@ -84,6 +90,10 @@ CapiTrack 使用官方 Go SDK，提供十五個 MCP tools：
 - `delete_price_alert`：刪除提醒
 - `list_alert_events`：列出提醒觸發紀錄
 - `check_price_alerts`：取得最新行情並立即檢查提醒
+- `list_liabilities`：列出負債與目前餘額
+- `create_liability`：新增負債項目
+- `list_liability_transactions`：列出負債異動
+- `add_liability_transaction`：新增借款、還款、利息或調整
 
 網站啟動後，Streamable HTTP MCP endpoint 位於：
 

@@ -83,6 +83,27 @@ type alertEventsOutput struct {
 type alertCheckOutput struct {
 	Triggered int `json:"triggered"`
 }
+type liabilityInput struct {
+	Name           string  `json:"name"`
+	Category       string  `json:"category,omitempty"`
+	Currency       string  `json:"currency,omitempty"`
+	InitialBalance float64 `json:"initialBalance"`
+	InterestRate   float64 `json:"interestRate,omitempty"`
+	Note           string  `json:"note,omitempty"`
+}
+type liabilityTransactionInput struct {
+	LiabilityID int64   `json:"liabilityId"`
+	Type        string  `json:"type"`
+	Amount      float64 `json:"amount"`
+	TradedAt    string  `json:"tradedAt"`
+	Note        string  `json:"note,omitempty"`
+}
+type liabilitiesOutput struct {
+	Liabilities []liability `json:"liabilities"`
+}
+type liabilityTransactionsOutput struct {
+	Transactions []liabilityTransaction `json:"transactions"`
+}
 
 func (a *app) newMCPServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "capitrack", Version: "0.2.0"}, nil)
@@ -94,14 +115,14 @@ func (a *app) newMCPServer() *mcp.Server {
 		return nil, result, err
 	})
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "get_portfolio_history", Description: "取得總資產變化走勢的時間序列，可指定 7D、1M、3M 或 ALL。",
+		Name: "get_portfolio_history", Description: "取得淨資產變化走勢的時間序列，可指定 7D、1M、3M 或 ALL。",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input rangeInput) (*mcp.CallToolResult, portfolioHistoryResult, error) {
 		result, err := a.getPortfolioHistory(input.Range)
 		return nil, result, err
 	})
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "get_performance_attribution", Description: "取得指定期間的績效歸因，包括總資產變化、投資損益、淨投入／提出，以及各標的損益貢獻。",
+		Name: "get_performance_attribution", Description: "取得指定期間的績效歸因，包括淨資產變化、投資損益、資金／負債變動，以及各標的損益貢獻。",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input rangeInput) (*mcp.CallToolResult, attributionResult, error) {
 		result, err := a.calculateAttribution(input.Range)
@@ -239,6 +260,44 @@ func (a *app) newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "check_price_alerts", Description: "取得最新行情並立即檢查所有啟用中的價格提醒。", Annotations: &mcp.ToolAnnotations{IdempotentHint: true}}, func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, alertCheckOutput, error) {
 		count, err := a.checkAlerts(ctx, true)
 		return nil, alertCheckOutput{Triggered: count}, err
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "list_liabilities", Description: "列出所有負債、目前餘額與換算後金額。", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, liabilitiesOutput, error) {
+		base, rate, _, err := a.portfolioSettings()
+		if err != nil {
+			return nil, liabilitiesOutput{}, err
+		}
+		items, err := a.calculateLiabilities(base, rate)
+		return nil, liabilitiesOutput{Liabilities: items}, err
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "create_liability", Description: "新增負債項目，例如房貸、貸款或信用卡。"}, func(ctx context.Context, req *mcp.CallToolRequest, input liabilityInput) (*mcp.CallToolResult, liability, error) {
+		item := liability{Name: input.Name, Category: input.Category, Currency: input.Currency, InitialBalance: input.InitialBalance, InterestRate: input.InterestRate, Note: input.Note}
+		if err := validateLiability(&item); err != nil {
+			return nil, liability{}, err
+		}
+		result, err := a.db.ExecContext(ctx, `INSERT INTO liabilities(name,category,currency,initial_balance,interest_rate,note) VALUES(?,?,?,?,?,?)`, item.Name, item.Category, item.Currency, item.InitialBalance, item.InterestRate, item.Note)
+		if err != nil {
+			return nil, liability{}, err
+		}
+		item.ID, _ = result.LastInsertId()
+		_ = a.recordSnapshot()
+		return nil, item, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "list_liability_transactions", Description: "列出借款、還款、利息與負債調整紀錄。", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, liabilityTransactionsOutput, error) {
+		items, err := a.queryLiabilityTransactions()
+		return nil, liabilityTransactionsOutput{Transactions: items}, err
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "add_liability_transaction", Description: "新增負債異動；type 可用 borrow、repay、interest 或 adjustment。"}, func(ctx context.Context, req *mcp.CallToolRequest, input liabilityTransactionInput) (*mcp.CallToolResult, liabilityTransaction, error) {
+		item := liabilityTransaction{LiabilityID: input.LiabilityID, Type: input.Type, Amount: input.Amount, TradedAt: input.TradedAt, Note: input.Note}
+		if err := validateLiabilityTransaction(&item); err != nil {
+			return nil, liabilityTransaction{}, err
+		}
+		result, err := a.db.ExecContext(ctx, `INSERT INTO liability_transactions(liability_id,type,amount,traded_at,note) VALUES(?,?,?,?,?)`, item.LiabilityID, item.Type, item.Amount, item.TradedAt, item.Note)
+		if err != nil {
+			return nil, liabilityTransaction{}, err
+		}
+		item.ID, _ = result.LastInsertId()
+		_ = a.recordSnapshot()
+		return nil, item, nil
 	})
 	return server
 }

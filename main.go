@@ -65,6 +65,8 @@ type holding struct {
 
 type portfolioSummary struct {
 	TotalValue        float64 `json:"totalValue"`
+	TotalLiabilities  float64 `json:"totalLiabilities"`
+	NetWorth          float64 `json:"netWorth"`
 	TotalCost         float64 `json:"totalCost"`
 	Unrealized        float64 `json:"unrealized"`
 	UnrealizedPercent float64 `json:"unrealizedPercent"`
@@ -115,6 +117,13 @@ func main() {
 	mux.HandleFunc("GET /api/markets/search", a.searchAssets)
 	mux.HandleFunc("POST /api/markets/refresh", a.refreshMarketData)
 	mux.HandleFunc("PUT /api/settings/base-currency", a.updateBaseCurrency)
+	mux.HandleFunc("GET /api/liabilities", a.listLiabilities)
+	mux.HandleFunc("POST /api/liabilities", a.createLiability)
+	mux.HandleFunc("PUT /api/liabilities/{id}", a.updateLiability)
+	mux.HandleFunc("DELETE /api/liabilities/{id}", a.deleteLiability)
+	mux.HandleFunc("GET /api/liability-transactions", a.listLiabilityTransactions)
+	mux.HandleFunc("POST /api/liability-transactions", a.createLiabilityTransaction)
+	mux.HandleFunc("DELETE /api/liability-transactions/{id}", a.deleteLiabilityTransaction)
 	mux.HandleFunc("GET /api/alerts", a.listAlerts)
 	mux.HandleFunc("POST /api/alerts", a.createAlert)
 	mux.HandleFunc("PUT /api/alerts/{id}", a.updateAlert)
@@ -203,6 +212,27 @@ func migrate(db *sql.DB) error {
 			triggered_at TEXT NOT NULL,
 			is_read INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS liabilities (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			category TEXT NOT NULL DEFAULT 'other',
+			currency TEXT NOT NULL DEFAULT 'TWD',
+			initial_balance REAL NOT NULL CHECK(initial_balance >= 0),
+			interest_rate REAL NOT NULL DEFAULT 0 CHECK(interest_rate >= 0),
+			note TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS liability_transactions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			liability_id INTEGER NOT NULL REFERENCES liabilities(id) ON DELETE CASCADE,
+			type TEXT NOT NULL CHECK(type IN ('borrow','repay','interest','adjustment')),
+			amount REAL NOT NULL CHECK(amount > 0),
+			traded_at TEXT NOT NULL,
+			note TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_liability_transactions_date ON liability_transactions(liability_id,traded_at DESC)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -228,7 +258,6 @@ func ensureColumn(db *sql.DB, table, column, statement string) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var cid int
 		var name, kind string
@@ -238,9 +267,11 @@ func ensureColumn(db *sql.DB, table, column, statement string) error {
 			return err
 		}
 		if name == column {
+			rows.Close()
 			return nil
 		}
 	}
+	rows.Close()
 	_, err = db.Exec(statement)
 	return err
 }
@@ -277,6 +308,11 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 		_ = rows.Scan(&s, &p, &market, &currency, &assetType, &underlying, &warrantType, &expiry)
 		assets[s] = assetMeta{p, market, currency, assetType, underlying, warrantType, expiry}
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return portfolioResult{}, err
+	}
+	rows.Close()
 	baseCurrency, usdTwd, lastUpdated, err := a.portfolioSettings()
 	if err != nil {
 		return portfolioResult{}, err
@@ -345,8 +381,16 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 			holdings[i].Allocation = holdings[i].MarketValue / totalValue * 100
 		}
 	}
+	liabilities, err := a.calculateLiabilities(baseCurrency, usdTwd)
+	if err != nil {
+		return portfolioResult{}, err
+	}
+	totalLiabilities := 0.0
+	for _, item := range liabilities {
+		totalLiabilities += item.BalanceBase
+	}
 	return portfolioResult{Holdings: holdings, Summary: portfolioSummary{
-		TotalValue: totalValue, TotalCost: totalCost, Unrealized: totalValue - totalCost,
+		TotalValue: totalValue, TotalLiabilities: totalLiabilities, NetWorth: totalValue - totalLiabilities, TotalCost: totalCost, Unrealized: totalValue - totalCost,
 		UnrealizedPercent: percent(totalValue-totalCost, totalCost), Realized: totalRealized,
 	}, BaseCurrency: baseCurrency, USDTWD: usdTwd, LastUpdated: lastUpdated}, rows.Err()
 }
@@ -547,7 +591,7 @@ func (a *app) recordSnapshot() error {
 	if err != nil {
 		return err
 	}
-	totalTWD := result.Summary.TotalValue
+	totalTWD := result.Summary.NetWorth
 	if result.BaseCurrency == "USD" {
 		totalTWD *= result.USDTWD
 	}
