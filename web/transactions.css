@@ -21,6 +21,12 @@
 .holdings-table td.positive-text { color: var(--green); }
 .holdings-table td.negative-text { color: var(--red); }
 .holdings-table td.positive-text small, .holdings-table td.negative-text small { color: inherit; }
+.performance-positive td:first-child > strong,
+.performance-positive td:nth-child(5) { color: #16a34a; }
+.performance-negative td:first-child > strong,
+.performance-negative td:nth-child(5) { color: #dc2626; }
+.warrants-table .performance-positive td:nth-child(6) { color: #16a34a; }
+.warrants-table .performance-negative td:nth-child(6) { color: #dc2626; }
 
 .chart-period { margin: 0 0 5px; color: var(--muted); font: 10px var(--mono); }
 .attribution-toggle { white-space: nowrap; }

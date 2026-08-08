@@ -18,6 +18,7 @@ type listTransactionsInput struct {
 }
 
 type transactionInput struct {
+	ID               int64   `json:"id,omitempty" jsonschema:"既有交易 ID；僅 update_transaction 需要"`
 	Symbol           string  `json:"symbol" jsonschema:"投資標的代號，例如 2330 或 AAPL"`
 	Name             string  `json:"name" jsonschema:"投資標的名稱"`
 	Type             string  `json:"type" jsonschema:"交易類型，只能是 buy 或 sell"`
@@ -29,7 +30,7 @@ type transactionInput struct {
 	Note             string  `json:"note,omitempty" jsonschema:"交易理由或備註"`
 	Market           string  `json:"market,omitempty" jsonschema:"市場，只能是 TW 或 US；預設 TW"`
 	Currency         string  `json:"currency,omitempty" jsonschema:"交易幣別，只能是 TWD 或 USD；依市場預設"`
-	AssetType        string  `json:"assetType,omitempty" jsonschema:"投資類型：stock 或 warrant"`
+	AssetType        string  `json:"assetType,omitempty" jsonschema:"投資類型：stock、etf 或 warrant"`
 	UnderlyingSymbol string  `json:"underlyingSymbol,omitempty" jsonschema:"權證連結標的代號"`
 	WarrantType      string  `json:"warrantType,omitempty" jsonschema:"權證類型：call 或 put"`
 	ExpiryDate       string  `json:"expiryDate,omitempty" jsonschema:"權證到期日 YYYY-MM-DD"`
@@ -85,6 +86,7 @@ type alertCheckOutput struct {
 	Triggered int `json:"triggered"`
 }
 type liabilityInput struct {
+	ID             int64   `json:"id,omitempty" jsonschema:"既有負債 ID；僅 update_liability 需要"`
 	Name           string  `json:"name"`
 	Category       string  `json:"category,omitempty"`
 	Currency       string  `json:"currency,omitempty"`
@@ -104,6 +106,25 @@ type liabilitiesOutput struct {
 }
 type liabilityTransactionsOutput struct {
 	Transactions []liabilityTransaction `json:"transactions"`
+}
+type cashAccountInput struct {
+	Name           string  `json:"name"`
+	Currency       string  `json:"currency,omitempty"`
+	InitialBalance float64 `json:"initialBalance"`
+	Note           string  `json:"note,omitempty"`
+}
+type cashTransactionInput struct {
+	AccountID int64   `json:"accountId"`
+	Type      string  `json:"type" jsonschema:"deposit、withdrawal、dividend、interest、fee 或 adjustment"`
+	Amount    float64 `json:"amount"`
+	TradedAt  string  `json:"tradedAt"`
+	Note      string  `json:"note,omitempty"`
+}
+type cashAccountsOutput struct {
+	Accounts []cashAccount `json:"accounts"`
+}
+type cashTransactionsOutput struct {
+	Transactions []cashTransaction `json:"transactions"`
 }
 
 func (a *app) newMCPServer() *mcp.Server {
@@ -157,6 +178,107 @@ func (a *app) newMCPServer() *mcp.Server {
 		}
 		return nil, mutationOutput{Success: true, Message: "交易已新增", Trade: t}, nil
 	})
+	mcp.AddTool(server, &mcp.Tool{Name: "update_transaction", Description: "更新既有交易；需提供 id 與完整交易內容。"}, func(ctx context.Context, req *mcp.CallToolRequest, input transactionInput) (*mcp.CallToolResult, mutationOutput, error) {
+		if input.ID <= 0 {
+			return nil, mutationOutput{}, errors.New("請提供交易 ID")
+		}
+		t := transaction{ID: input.ID, Symbol: input.Symbol, Name: input.Name, Type: input.Type, PositionAction: input.PositionAction, Quantity: input.Quantity, Price: input.Price, Fee: input.Fee, TradedAt: input.TradedAt, Note: input.Note, Market: input.Market, Currency: input.Currency, AssetType: input.AssetType, UnderlyingSymbol: input.UnderlyingSymbol, WarrantType: input.WarrantType, ExpiryDate: input.ExpiryDate, StrikePrice: input.StrikePrice, ExerciseRatio: input.ExerciseRatio}
+		if err := validate(&t); err != nil {
+			return nil, mutationOutput{}, err
+		}
+		tx, err := a.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, mutationOutput{}, err
+		}
+		defer tx.Rollback()
+		_, err = tx.ExecContext(ctx, `INSERT INTO assets(symbol,name,current_price,market,currency,asset_type,underlying_symbol,warrant_type,expiry_date,strike_price,exercise_ratio) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET name=excluded.name,market=excluded.market,currency=excluded.currency,asset_type=excluded.asset_type,underlying_symbol=excluded.underlying_symbol,warrant_type=excluded.warrant_type,expiry_date=excluded.expiry_date,strike_price=excluded.strike_price,exercise_ratio=excluded.exercise_ratio`, t.Symbol, t.Name, t.Price, t.Market, t.Currency, t.AssetType, t.UnderlyingSymbol, t.WarrantType, t.ExpiryDate, t.StrikePrice, t.ExerciseRatio)
+		if err != nil {
+			return nil, mutationOutput{}, err
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE transactions SET symbol=?,type=?,position_action=?,quantity=?,price=?,fee=?,traded_at=?,note=? WHERE id=?`, t.Symbol, t.Type, t.PositionAction, t.Quantity, t.Price, t.Fee, t.TradedAt, t.Note, t.ID)
+		if err != nil {
+			return nil, mutationOutput{}, err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			return nil, mutationOutput{}, sql.ErrNoRows
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, mutationOutput{}, err
+		}
+		_ = a.recordSnapshot()
+		return nil, mutationOutput{Success: true, Message: "交易已更新", Trade: t}, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "delete_transaction", Description: "刪除指定交易。"}, func(ctx context.Context, req *mcp.CallToolRequest, input alertIDInput) (*mcp.CallToolResult, mutationOutput, error) {
+		result, err := a.db.ExecContext(ctx, `DELETE FROM transactions WHERE id=?`, input.ID)
+		if err != nil {
+			return nil, mutationOutput{}, err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			return nil, mutationOutput{}, sql.ErrNoRows
+		}
+		_ = a.recordSnapshot()
+		return nil, mutationOutput{Success: true, Message: "交易已刪除"}, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "list_cash_accounts", Description: "列出帳戶現金餘額與換算後金額。", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, cashAccountsOutput, error) {
+		base, rate, _, err := a.portfolioSettings()
+		if err != nil {
+			return nil, cashAccountsOutput{}, err
+		}
+		items, err := a.calculateCashAccounts(base, rate)
+		return nil, cashAccountsOutput{Accounts: items}, err
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "create_cash_account", Description: "新增現金帳戶與期初餘額。"}, func(ctx context.Context, req *mcp.CallToolRequest, input cashAccountInput) (*mcp.CallToolResult, cashAccount, error) {
+		item := cashAccount{Name: input.Name, Currency: input.Currency, InitialBalance: input.InitialBalance, Note: input.Note}
+		if err := validateCashAccount(&item); err != nil {
+			return nil, cashAccount{}, err
+		}
+		result, err := a.db.ExecContext(ctx, `INSERT INTO cash_accounts(name,currency,initial_balance,note) VALUES(?,?,?,?)`, item.Name, item.Currency, item.InitialBalance, item.Note)
+		if err != nil {
+			return nil, cashAccount{}, err
+		}
+		item.ID, _ = result.LastInsertId()
+		_ = a.recordSnapshot()
+		return nil, item, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "delete_cash_account", Description: "刪除現金帳戶及其流水。"}, func(ctx context.Context, req *mcp.CallToolRequest, input alertIDInput) (*mcp.CallToolResult, mutationOutput, error) {
+		result, err := a.db.ExecContext(ctx, `DELETE FROM cash_accounts WHERE id=?`, input.ID)
+		if err != nil {
+			return nil, mutationOutput{}, err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			return nil, mutationOutput{}, sql.ErrNoRows
+		}
+		_ = a.recordSnapshot()
+		return nil, mutationOutput{Success: true, Message: "現金帳戶已刪除"}, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "list_cash_transactions", Description: "列出所有帳戶現金流水。", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, cashTransactionsOutput, error) {
+		items, err := a.queryCashTransactions()
+		return nil, cashTransactionsOutput{Transactions: items}, err
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "add_cash_transaction", Description: "新增現金流水；可記錄存入、提領、股息、利息、費用或調整。"}, func(ctx context.Context, req *mcp.CallToolRequest, input cashTransactionInput) (*mcp.CallToolResult, cashTransaction, error) {
+		item := cashTransaction{AccountID: input.AccountID, Type: input.Type, Amount: input.Amount, TradedAt: input.TradedAt, Note: input.Note}
+		if err := validateCashTransaction(&item); err != nil {
+			return nil, cashTransaction{}, err
+		}
+		result, err := a.db.ExecContext(ctx, `INSERT INTO cash_transactions(account_id,type,amount,traded_at,note) VALUES(?,?,?,?,?)`, item.AccountID, item.Type, item.Amount, item.TradedAt, item.Note)
+		if err != nil {
+			return nil, cashTransaction{}, err
+		}
+		item.ID, _ = result.LastInsertId()
+		_ = a.recordSnapshot()
+		return nil, item, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "delete_cash_transaction", Description: "刪除指定現金流水。"}, func(ctx context.Context, req *mcp.CallToolRequest, input alertIDInput) (*mcp.CallToolResult, mutationOutput, error) {
+		result, err := a.db.ExecContext(ctx, `DELETE FROM cash_transactions WHERE id=?`, input.ID)
+		if err != nil {
+			return nil, mutationOutput{}, err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			return nil, mutationOutput{}, sql.ErrNoRows
+		}
+		_ = a.recordSnapshot()
+		return nil, mutationOutput{Success: true, Message: "現金流水已刪除"}, nil
+	})
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "set_base_currency", Description: "設定 portfolio 總值、走勢與績效歸因使用 TWD 或 USD 顯示。",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
@@ -193,22 +315,30 @@ func (a *app) newMCPServer() *mcp.Server {
 		Name: "refresh_market_data", Description: "取得 portfolio 內所有台股、美股的最新價格，以及 USD/TWD 最新匯率。",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, mutationOutput, error) {
-		rows, err := a.db.QueryContext(ctx, `SELECT symbol,market FROM assets WHERE EXISTS(SELECT 1 FROM transactions t WHERE t.symbol=assets.symbol)`)
+		rows, err := a.db.QueryContext(ctx, `SELECT symbol,market,asset_type FROM assets WHERE EXISTS(SELECT 1 FROM transactions t WHERE t.symbol=assets.symbol)`)
 		if err != nil {
 			return nil, mutationOutput{}, err
 		}
 		defer rows.Close()
 		updated := 0
 		for rows.Next() {
-			var symbol, market string
-			if err := rows.Scan(&symbol, &market); err != nil {
+			var symbol, market, assetType string
+			if err := rows.Scan(&symbol, &market, &assetType); err != nil {
 				return nil, mutationOutput{}, err
+			}
+			if assetType == "warrant" {
+				continue
 			}
 			lookup := symbol
 			if market == "TW" && !strings.Contains(lookup, ".") {
 				lookup += ".TW"
 			}
-			quote, err := a.market.Quote(ctx, lookup)
+			var quote marketQuote
+			if provider, ok := a.market.(assetQuoteProvider); ok {
+				quote, err = provider.QuoteAsset(ctx, lookup, assetType)
+			} else {
+				quote, err = a.market.Quote(ctx, lookup)
+			}
 			if err != nil {
 				continue
 			}
@@ -283,6 +413,35 @@ func (a *app) newMCPServer() *mcp.Server {
 		_ = a.recordSnapshot()
 		return nil, item, nil
 	})
+	mcp.AddTool(server, &mcp.Tool{Name: "update_liability", Description: "更新負債名稱、類別、期初餘額、幣別、利率或備註。"}, func(ctx context.Context, req *mcp.CallToolRequest, input liabilityInput) (*mcp.CallToolResult, liability, error) {
+		if input.ID <= 0 {
+			return nil, liability{}, errors.New("請提供負債 ID")
+		}
+		item := liability{ID: input.ID, Name: input.Name, Category: input.Category, Currency: input.Currency, InitialBalance: input.InitialBalance, InterestRate: input.InterestRate, Note: input.Note}
+		if err := validateLiability(&item); err != nil {
+			return nil, liability{}, err
+		}
+		result, err := a.db.ExecContext(ctx, `UPDATE liabilities SET name=?,category=?,currency=?,initial_balance=?,interest_rate=?,note=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`, item.Name, item.Category, item.Currency, item.InitialBalance, item.InterestRate, item.Note, item.ID)
+		if err != nil {
+			return nil, liability{}, err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			return nil, liability{}, sql.ErrNoRows
+		}
+		_ = a.recordSnapshot()
+		return nil, item, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "delete_liability", Description: "刪除負債項目及其異動紀錄。"}, func(ctx context.Context, req *mcp.CallToolRequest, input alertIDInput) (*mcp.CallToolResult, mutationOutput, error) {
+		result, err := a.db.ExecContext(ctx, `DELETE FROM liabilities WHERE id=?`, input.ID)
+		if err != nil {
+			return nil, mutationOutput{}, err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			return nil, mutationOutput{}, sql.ErrNoRows
+		}
+		_ = a.recordSnapshot()
+		return nil, mutationOutput{Success: true, Message: "負債已刪除"}, nil
+	})
 	mcp.AddTool(server, &mcp.Tool{Name: "list_liability_transactions", Description: "列出借款、還款、利息與負債調整紀錄。", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, liabilityTransactionsOutput, error) {
 		items, err := a.queryLiabilityTransactions()
 		return nil, liabilityTransactionsOutput{Transactions: items}, err
@@ -299,6 +458,17 @@ func (a *app) newMCPServer() *mcp.Server {
 		item.ID, _ = result.LastInsertId()
 		_ = a.recordSnapshot()
 		return nil, item, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "delete_liability_transaction", Description: "刪除指定負債異動。"}, func(ctx context.Context, req *mcp.CallToolRequest, input alertIDInput) (*mcp.CallToolResult, mutationOutput, error) {
+		result, err := a.db.ExecContext(ctx, `DELETE FROM liability_transactions WHERE id=?`, input.ID)
+		if err != nil {
+			return nil, mutationOutput{}, err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			return nil, mutationOutput{}, sql.ErrNoRows
+		}
+		_ = a.recordSnapshot()
+		return nil, mutationOutput{Success: true, Message: "負債異動已刪除"}, nil
 	})
 	return server
 }

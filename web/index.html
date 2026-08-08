@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css?v=liability-overview-1">
-  <link rel="stylesheet" href="/transactions.css?v=liability-overview-1">
+  <link rel="stylesheet" href="/transactions.css?v=performance-colors-1">
 </head>
 <body>
   <div class="shell">
@@ -140,6 +140,6 @@
   <dialog id="liabilityDialog"><form id="liabilityForm"><div class="dialog-head"><div><p class="eyebrow">LIABILITY</p><h2>新增負債</h2></div><button type="button" class="icon-button" data-close-liability>×</button></div><div class="form-grid"><label class="full">名稱<input id="liabilityName" required placeholder="例如：房貸、信用貸款"></label><label>類別<select id="liabilityCategory"><option value="mortgage">房貸</option><option value="loan">貸款</option><option value="credit_card">信用卡</option><option value="other">其他</option></select></label><label>幣別<select id="liabilityCurrency"><option value="TWD">TWD</option><option value="USD">USD</option></select></label><label>期初餘額<input id="liabilityInitial" type="number" min="0" step="any" required></label><label>年利率（%）<input id="liabilityRate" type="number" min="0" step="any" value="0"></label><label class="full">備註<textarea id="liabilityNote" rows="3"></textarea></label></div><div class="dialog-actions"><button type="button" class="secondary" data-close-liability>取消</button><button type="submit" class="primary">建立負債</button></div></form></dialog>
   <dialog id="liabilityTxDialog"><form id="liabilityTxForm"><div class="dialog-head"><div><p class="eyebrow">LIABILITY ENTRY</p><h2>記錄負債異動</h2></div><button type="button" class="icon-button" data-close-liability-tx>×</button></div><div class="form-grid"><label class="full">負債項目<select id="liabilityTxLiability" required></select></label><label>異動類型<select id="liabilityTxType"><option value="repay">還款（減少）</option><option value="borrow">新增借款（增加）</option><option value="interest">利息（增加）</option><option value="adjustment">其他增加</option></select></label><label>金額<input id="liabilityTxAmount" type="number" min="0.000001" step="any" required></label><label>日期<input id="liabilityTxDate" type="date" required></label><label class="full">備註<textarea id="liabilityTxNote" rows="3"></textarea></label></div><div class="dialog-actions"><button type="button" class="secondary" data-close-liability-tx>取消</button><button type="submit" class="primary">儲存異動</button></div></form></dialog>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/app.js?v=section-totals-1"></script>
+  <script src="/app.js?v=performance-colors-1"></script>
 </body>
 </html>

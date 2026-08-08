@@ -73,7 +73,7 @@ go run .
 
 ## MCP
 
-CapiTrack 使用官方 Go SDK，提供十九個 MCP tools：
+CapiTrack 使用官方 Go SDK，提供完整對應網站功能的三十個 MCP tools：
 
 - `get_portfolio`：讀取目前持股、總值、成本與損益
 - `get_portfolio_history`：讀取指定期間的總資產走勢
@@ -81,6 +81,7 @@ CapiTrack 使用官方 Go SDK，提供十九個 MCP tools：
 - `list_transactions`：依標的或日期區間查詢交易
 - `search_assets`：依 ticker 或公司名稱搜尋台股、美股
 - `add_transaction`：新增買入或賣出交易
+- `update_transaction`、`delete_transaction`：更新或刪除交易
 - `set_base_currency`：設定總值、走勢與績效歸因的顯示幣別
 - `update_current_price`：更新標的目前市價
 - `refresh_market_data`：更新全部持股價格與 USD/TWD 匯率
@@ -92,8 +93,12 @@ CapiTrack 使用官方 Go SDK，提供十九個 MCP tools：
 - `check_price_alerts`：取得最新行情並立即檢查提醒
 - `list_liabilities`：列出負債與目前餘額
 - `create_liability`：新增負債項目
+- `update_liability`、`delete_liability`：更新或刪除負債項目
 - `list_liability_transactions`：列出負債異動
 - `add_liability_transaction`：新增借款、還款、利息或調整
+- `delete_liability_transaction`：刪除負債異動
+- `list_cash_accounts`、`create_cash_account`、`delete_cash_account`：管理現金帳戶
+- `list_cash_transactions`、`add_cash_transaction`、`delete_cash_transaction`：管理現金流水
 
 網站啟動後，Streamable HTTP MCP endpoint 位於：
 
