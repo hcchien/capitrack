@@ -17,7 +17,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type app struct{ db *sql.DB }
+type app struct {
+	db     *sql.DB
+	market marketDataProvider
+}
 
 type transaction struct {
 	ID        int64   `json:"id"`
@@ -30,6 +33,8 @@ type transaction struct {
 	TradedAt  string  `json:"tradedAt"`
 	Note      string  `json:"note"`
 	CreatedAt string  `json:"createdAt,omitempty"`
+	Market    string  `json:"market"`
+	Currency  string  `json:"currency"`
 }
 
 type holding struct {
@@ -44,6 +49,8 @@ type holding struct {
 	UnrealizedPC float64 `json:"unrealizedPercent"`
 	Realized     float64 `json:"realized"`
 	Allocation   float64 `json:"allocation"`
+	Market       string  `json:"market"`
+	Currency     string  `json:"currency"`
 }
 
 type portfolioSummary struct {
@@ -55,8 +62,11 @@ type portfolioSummary struct {
 }
 
 type portfolioResult struct {
-	Holdings []holding        `json:"holdings"`
-	Summary  portfolioSummary `json:"summary"`
+	Holdings     []holding        `json:"holdings"`
+	Summary      portfolioSummary `json:"summary"`
+	BaseCurrency string           `json:"baseCurrency"`
+	USDTWD       float64          `json:"usdTwd"`
+	LastUpdated  string           `json:"lastUpdated"`
 }
 
 func main() {
@@ -73,7 +83,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	a := &app{db: db}
+	a := &app{db: db, market: newYahooProvider()}
+	_ = a.recordSnapshot()
 	mcpServer := a.newMCPServer()
 	if len(os.Args) > 1 && os.Args[1] == "mcp" {
 		if err := mcpServer.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
@@ -83,11 +94,16 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/portfolio", a.portfolio)
+	mux.HandleFunc("GET /api/portfolio/history", a.portfolioHistory)
+	mux.HandleFunc("GET /api/portfolio/attribution", a.portfolioAttribution)
 	mux.HandleFunc("GET /api/transactions", a.listTransactions)
 	mux.HandleFunc("POST /api/transactions", a.createTransaction)
 	mux.HandleFunc("PUT /api/transactions/{id}", a.updateTransaction)
 	mux.HandleFunc("DELETE /api/transactions/{id}", a.deleteTransaction)
 	mux.HandleFunc("PUT /api/assets/{symbol}/price", a.updatePrice)
+	mux.HandleFunc("GET /api/markets/search", a.searchAssets)
+	mux.HandleFunc("POST /api/markets/refresh", a.refreshMarketData)
+	mux.HandleFunc("PUT /api/settings/base-currency", a.updateBaseCurrency)
 	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{JSONResponse: true, Stateless: true}))
 	mux.Handle("/", http.FileServer(http.Dir("web")))
 	port := env("PORT", "8080")
@@ -101,6 +117,8 @@ func migrate(db *sql.DB) error {
 			symbol TEXT PRIMARY KEY COLLATE NOCASE,
 			name TEXT NOT NULL,
 			current_price REAL NOT NULL DEFAULT 0,
+			market TEXT NOT NULL DEFAULT 'TW',
+			currency TEXT NOT NULL DEFAULT 'TWD',
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS transactions (
@@ -115,13 +133,63 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_symbol_date ON transactions(symbol, traded_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
+		`INSERT OR IGNORE INTO settings(key,value) VALUES('base_currency','TWD')`,
+		`INSERT OR IGNORE INTO settings(key,value) VALUES('usd_twd','30')`,
+		`INSERT OR IGNORE INTO settings(key,value) VALUES('last_refresh','')`,
+		`CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			captured_at TEXT NOT NULL,
+			total_twd REAL NOT NULL,
+			usd_twd REAL NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_time ON portfolio_snapshots(captured_at)`,
+		`CREATE TABLE IF NOT EXISTS asset_performance_snapshots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			snapshot_id INTEGER NOT NULL REFERENCES portfolio_snapshots(id) ON DELETE CASCADE,
+			symbol TEXT NOT NULL,
+			name TEXT NOT NULL,
+			pnl_twd REAL NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_asset_performance_snapshot ON asset_performance_snapshots(snapshot_id,symbol)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
 			return err
 		}
 	}
+	if err := ensureColumn(db, "assets", "market", `ALTER TABLE assets ADD COLUMN market TEXT NOT NULL DEFAULT 'TW'`); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "assets", "currency", `ALTER TABLE assets ADD COLUMN currency TEXT NOT NULL DEFAULT 'TWD'`); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ensureColumn(db *sql.DB, table, column, statement string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, kind string
+		var notnull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notnull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	_, err = db.Exec(statement)
+	return err
 }
 
 func (a *app) portfolio(w http.ResponseWriter, r *http.Request) {
@@ -138,8 +206,12 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 	if err != nil {
 		return portfolioResult{}, err
 	}
-	prices := map[string]float64{}
-	rows, err := a.db.Query(`SELECT symbol, current_price FROM assets`)
+	type assetMeta struct {
+		price            float64
+		market, currency string
+	}
+	assets := map[string]assetMeta{}
+	rows, err := a.db.Query(`SELECT symbol, current_price, market, currency FROM assets`)
 	if err != nil {
 		return portfolioResult{}, err
 	}
@@ -147,15 +219,33 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 	for rows.Next() {
 		var s string
 		var p float64
-		_ = rows.Scan(&s, &p)
-		prices[s] = p
+		var market, currency string
+		_ = rows.Scan(&s, &p, &market, &currency)
+		assets[s] = assetMeta{p, market, currency}
+	}
+	baseCurrency, usdTwd, lastUpdated, err := a.portfolioSettings()
+	if err != nil {
+		return portfolioResult{}, err
+	}
+	convert := func(value float64, from string) float64 {
+		if from == baseCurrency {
+			return value
+		}
+		if from == "USD" && baseCurrency == "TWD" {
+			return value * usdTwd
+		}
+		if from == "TWD" && baseCurrency == "USD" && usdTwd > 0 {
+			return value / usdTwd
+		}
+		return value
 	}
 
 	bySymbol := map[string]*holding{}
 	for _, t := range txs {
 		h := bySymbol[t.Symbol]
 		if h == nil {
-			h = &holding{Symbol: t.Symbol, Name: t.Name, CurrentPrice: prices[t.Symbol]}
+			meta := assets[t.Symbol]
+			h = &holding{Symbol: t.Symbol, Name: t.Name, CurrentPrice: meta.price, Market: meta.market, Currency: meta.currency}
 			bySymbol[t.Symbol] = h
 		}
 		if t.Type == "buy" {
@@ -180,11 +270,16 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 	for _, h := range bySymbol {
 		if h.Quantity > 0 {
 			h.AverageCost = h.CostBasis / h.Quantity
-			h.MarketValue = h.Quantity * h.CurrentPrice
-			h.Unrealized = h.MarketValue - h.CostBasis
-			if h.CostBasis != 0 {
-				h.UnrealizedPC = h.Unrealized / h.CostBasis * 100
+			localValue := h.Quantity * h.CurrentPrice
+			localCost := h.CostBasis
+			localUnrealized := localValue - localCost
+			if localCost != 0 {
+				h.UnrealizedPC = localUnrealized / localCost * 100
 			}
+			h.MarketValue = convert(localValue, h.Currency)
+			h.CostBasis = convert(localCost, h.Currency)
+			h.Unrealized = convert(localUnrealized, h.Currency)
+			h.Realized = convert(h.Realized, h.Currency)
 			totalValue += h.MarketValue
 			totalCost += h.CostBasis
 			holdings = append(holdings, *h)
@@ -199,7 +294,25 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 	return portfolioResult{Holdings: holdings, Summary: portfolioSummary{
 		TotalValue: totalValue, TotalCost: totalCost, Unrealized: totalValue - totalCost,
 		UnrealizedPercent: percent(totalValue-totalCost, totalCost), Realized: totalRealized,
-	}}, rows.Err()
+	}, BaseCurrency: baseCurrency, USDTWD: usdTwd, LastUpdated: lastUpdated}, rows.Err()
+}
+
+func (a *app) portfolioSettings() (string, float64, string, error) {
+	values := map[string]string{}
+	rows, err := a.db.Query(`SELECT key,value FROM settings WHERE key IN ('base_currency','usd_twd','last_refresh')`)
+	if err != nil {
+		return "", 0, "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return "", 0, "", err
+		}
+		values[key] = value
+	}
+	rate, _ := strconv.ParseFloat(values["usd_twd"], 64)
+	return values["base_currency"], rate, values["last_refresh"], rows.Err()
 }
 
 func (a *app) listTransactions(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +325,7 @@ func (a *app) listTransactions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) queryTransactions(symbol, from, to string) ([]transaction, error) {
-	query := `SELECT t.id, t.symbol, a.name, t.type, t.quantity, t.price, t.fee, t.traded_at, t.note, t.created_at
+	query := `SELECT t.id, t.symbol, a.name, t.type, t.quantity, t.price, t.fee, t.traded_at, t.note, t.created_at, a.market, a.currency
 		FROM transactions t JOIN assets a ON a.symbol=t.symbol WHERE 1=1`
 	args := []any{}
 	if symbol != "" {
@@ -236,7 +349,7 @@ func (a *app) queryTransactions(symbol, from, to string) ([]transaction, error) 
 	result := []transaction{}
 	for rows.Next() {
 		var t transaction
-		if err := rows.Scan(&t.ID, &t.Symbol, &t.Name, &t.Type, &t.Quantity, &t.Price, &t.Fee, &t.TradedAt, &t.Note, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Symbol, &t.Name, &t.Type, &t.Quantity, &t.Price, &t.Fee, &t.TradedAt, &t.Note, &t.CreatedAt, &t.Market, &t.Currency); err != nil {
 			return nil, err
 		}
 		result = append(result, t)
@@ -260,7 +373,7 @@ func (a *app) createTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO assets(symbol,name,current_price) VALUES(?,?,?) ON CONFLICT(symbol) DO UPDATE SET name=excluded.name`, t.Symbol, t.Name, t.Price)
+	_, err = tx.Exec(`INSERT INTO assets(symbol,name,current_price,market,currency) VALUES(?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET name=excluded.name,market=excluded.market,currency=excluded.currency`, t.Symbol, t.Name, t.Price, t.Market, t.Currency)
 	if err != nil {
 		fail(w, err, 500)
 		return
@@ -275,6 +388,7 @@ func (a *app) createTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.ID, _ = result.LastInsertId()
+	_ = a.recordSnapshot()
 	writeJSONStatus(w, t, 201)
 }
 
@@ -299,7 +413,7 @@ func (a *app) updateTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO assets(symbol,name,current_price) VALUES(?,?,?) ON CONFLICT(symbol) DO UPDATE SET name=excluded.name`, t.Symbol, t.Name, t.Price)
+	_, err = tx.Exec(`INSERT INTO assets(symbol,name,current_price,market,currency) VALUES(?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET name=excluded.name,market=excluded.market,currency=excluded.currency`, t.Symbol, t.Name, t.Price, t.Market, t.Currency)
 	if err != nil {
 		fail(w, err, 500)
 		return
@@ -319,6 +433,7 @@ func (a *app) updateTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.ID = id
+	_ = a.recordSnapshot()
 	writeJSON(w, t)
 }
 
@@ -338,6 +453,7 @@ func (a *app) deleteTransaction(w http.ResponseWriter, r *http.Request) {
 		fail(w, errors.New("找不到交易"), 404)
 		return
 	}
+	_ = a.recordSnapshot()
 	w.WriteHeader(204)
 }
 
@@ -359,7 +475,92 @@ func (a *app) updatePrice(w http.ResponseWriter, r *http.Request) {
 		fail(w, errors.New("找不到投資項目"), 404)
 		return
 	}
+	_ = a.recordSnapshot()
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+type portfolioHistoryPoint struct {
+	CapturedAt string  `json:"capturedAt"`
+	Value      float64 `json:"value"`
+}
+type portfolioHistoryResult struct {
+	Currency string                  `json:"currency"`
+	Points   []portfolioHistoryPoint `json:"points"`
+}
+
+func (a *app) recordSnapshot() error {
+	result, err := a.calculatePortfolio()
+	if err != nil {
+		return err
+	}
+	totalTWD := result.Summary.TotalValue
+	if result.BaseCurrency == "USD" {
+		totalTWD *= result.USDTWD
+	}
+	performance, err := a.assetPerformanceTWD(result.USDTWD)
+	if err != nil {
+		return err
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	insert, err := tx.Exec(`INSERT INTO portfolio_snapshots(captured_at,total_twd,usd_twd) VALUES(?,?,?)`, time.Now().Format(time.RFC3339), totalTWD, result.USDTWD)
+	if err != nil {
+		return err
+	}
+	snapshotID, _ := insert.LastInsertId()
+	for _, item := range performance {
+		if _, err = tx.Exec(`INSERT INTO asset_performance_snapshots(snapshot_id,symbol,name,pnl_twd) VALUES(?,?,?,?)`, snapshotID, item.Symbol, item.Name, item.PnLTWD); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (a *app) portfolioHistory(w http.ResponseWriter, r *http.Request) {
+	result, err := a.getPortfolioHistory(r.URL.Query().Get("range"))
+	if err != nil {
+		fail(w, err, 500)
+		return
+	}
+	writeJSON(w, result)
+}
+
+func (a *app) getPortfolioHistory(requestedRange string) (portfolioHistoryResult, error) {
+	rangeName := strings.ToUpper(requestedRange)
+	days := map[string]int{"7D": 7, "1M": 30, "3M": 90}
+	query := `SELECT captured_at,total_twd,usd_twd FROM portfolio_snapshots`
+	args := []any{}
+	if dayCount, ok := days[rangeName]; ok {
+		query += ` WHERE captured_at>=?`
+		args = append(args, time.Now().AddDate(0, 0, -dayCount).Format(time.RFC3339))
+	}
+	query += ` ORDER BY captured_at ASC`
+	baseCurrency, _, _, err := a.portfolioSettings()
+	if err != nil {
+		return portfolioHistoryResult{}, err
+	}
+	rows, err := a.db.Query(query, args...)
+	if err != nil {
+		return portfolioHistoryResult{}, err
+	}
+	defer rows.Close()
+	points := []portfolioHistoryPoint{}
+	for rows.Next() {
+		var point portfolioHistoryPoint
+		var totalTWD, rate float64
+		if err := rows.Scan(&point.CapturedAt, &totalTWD, &rate); err != nil {
+			return portfolioHistoryResult{}, err
+		}
+		point.Value = totalTWD
+		if baseCurrency == "USD" && rate > 0 {
+			point.Value = totalTWD / rate
+		}
+		points = append(points, point)
+	}
+	return portfolioHistoryResult{Currency: baseCurrency, Points: points}, rows.Err()
 }
 
 func validate(t *transaction) error {
@@ -367,11 +568,29 @@ func validate(t *transaction) error {
 	t.Name = strings.TrimSpace(t.Name)
 	t.Type = strings.ToLower(t.Type)
 	t.Note = strings.TrimSpace(t.Note)
+	t.Market = strings.ToUpper(strings.TrimSpace(t.Market))
+	t.Currency = strings.ToUpper(strings.TrimSpace(t.Currency))
+	if t.Market == "" {
+		t.Market = "TW"
+	}
+	if t.Currency == "" {
+		if t.Market == "US" {
+			t.Currency = "USD"
+		} else {
+			t.Currency = "TWD"
+		}
+	}
 	if t.Symbol == "" || t.Name == "" {
 		return errors.New("請填寫代號與名稱")
 	}
 	if t.Type != "buy" && t.Type != "sell" {
 		return errors.New("交易類型必須是買入或賣出")
+	}
+	if t.Market != "TW" && t.Market != "US" {
+		return errors.New("市場必須是台股或美股")
+	}
+	if t.Currency != "TWD" && t.Currency != "USD" {
+		return errors.New("幣別必須是台幣或美金")
 	}
 	if t.Quantity <= 0 || t.Price < 0 || t.Fee < 0 {
 		return errors.New("數量、價格或手續費不正確")

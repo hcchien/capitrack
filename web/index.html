@@ -25,15 +25,46 @@
     <main>
       <header class="topbar">
         <div><p class="eyebrow" id="eyebrow">PORTFOLIO OVERVIEW</p><h1 id="pageTitle">投資總覽</h1></div>
-        <button class="primary" id="addTrade">＋ 新增交易</button>
+        <div class="top-actions">
+          <label class="currency-switch" aria-label="總值顯示幣別"><span>總值</span><select id="baseCurrency"><option value="TWD">TWD</option><option value="USD">USD</option></select></label>
+          <button class="secondary refresh-button" id="refreshPrices">↻ 最新更新</button>
+          <button class="primary" id="addTrade">＋ 新增交易</button>
+        </div>
       </header>
 
       <section id="overview" class="view active-view">
         <div class="hero-card">
           <div><p>目前總資產</p><h2 id="totalValue">NT$ 0</h2><div id="totalPnl" class="change neutral">尚無損益</div></div>
-          <div class="hero-meta"><div><span>投入成本</span><strong id="totalCost">NT$ 0</strong></div><div><span>已實現損益</span><strong id="realized">NT$ 0</strong></div></div>
+          <div class="hero-meta"><div><span>投入成本</span><strong id="totalCost">NT$ 0</strong></div><div><span>已實現損益</span><strong id="realized">NT$ 0</strong></div><div><span>USD / TWD</span><strong id="fxRate">—</strong></div></div>
           <div class="orb" aria-hidden="true"></div>
         </div>
+        <section class="chart-card" aria-labelledby="trendTitle">
+          <div class="chart-head">
+            <div><p class="eyebrow">PORTFOLIO TREND</p><h3 id="trendTitle">總資產走勢</h3><p id="chartDelta" class="chart-delta">從現在開始記錄資產變化</p></div>
+            <div class="range-tabs" role="group" aria-label="圖表時間範圍">
+              <button data-range="7D">7天</button><button data-range="1M" class="active">1月</button><button data-range="3M">3月</button><button data-range="ALL">全部</button>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="portfolioChart" role="img" aria-label="總資產價值隨時間變化的互動折線圖"></canvas>
+            <div id="chartTooltip" class="chart-tooltip" hidden><strong></strong><span></span></div>
+            <div id="chartEmpty" class="chart-empty" hidden>更新行情或新增交易後，資產走勢會開始累積。</div>
+          </div>
+        </section>
+        <section class="attribution-card" aria-labelledby="attributionTitle">
+          <div class="chart-head">
+            <div><p class="eyebrow">PERFORMANCE ATTRIBUTION</p><h3 id="attributionTitle">誰帶來了這段成長？</h3><p class="chart-delta">投資損益與資金投入分開計算</p></div>
+            <div class="range-tabs attribution-ranges" role="group" aria-label="績效歸因時間範圍">
+              <button data-attribution-range="1M">1月</button><button data-attribution-range="3M">3月</button><button data-attribution-range="1Y" class="active">1年</button><button data-attribution-range="ALL">全部</button>
+            </div>
+          </div>
+          <div class="attribution-summary">
+            <div><span>總資產變化</span><strong id="attributionTotal">—</strong></div>
+            <div><span>投資損益</span><strong id="attributionProfit">—</strong></div>
+            <div><span>淨投入／提出</span><strong id="attributionFlow">—</strong></div>
+          </div>
+          <div id="attributionList" class="attribution-list"></div>
+        </section>
         <div class="section-heading"><div><p class="eyebrow">YOUR ASSETS</p><h3>目前持股</h3></div><span id="holdingCount" class="count">0 個項目</span></div>
         <div id="holdings" class="holdings-grid"></div>
       </section>
@@ -61,8 +92,10 @@
       <input type="hidden" id="tradeId">
       <div class="type-toggle"><label><input type="radio" name="type" value="buy" checked><span>買入</span></label><label><input type="radio" name="type" value="sell"><span>賣出</span></label></div>
       <div class="form-grid">
-        <label>代號<input id="symbol" required placeholder="例如：2330"></label>
-        <label>名稱<input id="name" required placeholder="例如：台積電"></label>
+        <label>市場<select id="market" required><option value="TW">台股</option><option value="US">美股</option></select></label>
+        <label>交易幣別<select id="currency" required><option value="TWD">TWD 台幣</option><option value="USD">USD 美金</option></select></label>
+        <label class="full ticker-field">搜尋股票代號或名稱<input id="symbol" required autocomplete="off" placeholder="例如：2330、台積電、AAPL"><span class="field-hint">輸入後會自動搜尋 ticker 與公司名稱</span><div id="tickerResults" class="autocomplete" hidden></div></label>
+        <label class="full">名稱<input id="name" required placeholder="選擇搜尋結果後自動帶入"></label>
         <label>數量<input id="quantity" required type="number" min="0.000001" step="any" placeholder="0"></label>
         <label>每單位價格<input id="price" required type="number" min="0" step="any" placeholder="0"></label>
         <label>交易日期<input id="tradedAt" required type="date"></label>
