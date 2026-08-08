@@ -30,6 +30,10 @@ type marketDataProvider interface {
 	Quote(context.Context, string) (marketQuote, error)
 }
 
+type assetQuoteProvider interface {
+	QuoteAsset(context.Context, string, string) (marketQuote, error)
+}
+
 type publicMarketProvider struct {
 	client   *http.Client
 	mu       sync.Mutex
@@ -74,6 +78,8 @@ func (p *publicMarketProvider) Search(ctx context.Context, query, market string)
 		assetType := "stock"
 		if item.Asset == "WARRANTS" {
 			assetType = "warrant"
+		} else if item.Asset == "ETF" {
+			assetType = "etf"
 		}
 		results = append(results, marketSearchResult{Symbol: item.Symbol, Name: strings.TrimSpace(item.Name), Market: "US", Currency: "USD", AssetType: assetType})
 		if len(results) == 8 {
@@ -134,9 +140,23 @@ func (p *publicMarketProvider) Quote(ctx context.Context, symbol string) (market
 		}
 		return marketQuote{Symbol: symbol, Price: rate, Currency: "TWD"}, nil
 	}
+	if symbol == "BTC" || symbol == "ETH" {
+		return p.cryptoQuote(ctx, symbol)
+	}
 	if strings.HasSuffix(symbol, ".TW") || strings.HasSuffix(symbol, ".TWO") {
 		return p.taiwanQuote(ctx, symbol)
 	}
+	return p.usQuote(ctx, symbol, "stocks")
+}
+
+func (p *publicMarketProvider) QuoteAsset(ctx context.Context, symbol, assetType string) (marketQuote, error) {
+	if assetType != "etf" || strings.HasSuffix(symbol, ".TW") || strings.HasSuffix(symbol, ".TWO") || symbol == "BTC" || symbol == "ETH" {
+		return p.Quote(ctx, symbol)
+	}
+	return p.usQuote(ctx, symbol, "etf")
+}
+
+func (p *publicMarketProvider) usQuote(ctx context.Context, symbol, assetClass string) (marketQuote, error) {
 	var payload struct {
 		Data *struct {
 			Symbol      string `json:"symbol"`
@@ -145,7 +165,7 @@ func (p *publicMarketProvider) Quote(ctx context.Context, symbol string) (market
 			} `json:"primaryData"`
 		} `json:"data"`
 	}
-	endpoint := "https://api.nasdaq.com/api/quote/" + url.PathEscape(symbol) + "/info?assetclass=stocks"
+	endpoint := "https://api.nasdaq.com/api/quote/" + url.PathEscape(symbol) + "/info?assetclass=" + url.QueryEscape(assetClass)
 	if err := p.getJSON(ctx, endpoint, &payload); err != nil {
 		return marketQuote{}, err
 	}
@@ -153,6 +173,24 @@ func (p *publicMarketProvider) Quote(ctx context.Context, symbol string) (market
 		return marketQuote{}, errors.New("找不到美股行情")
 	}
 	price, err := parsePrice(payload.Data.PrimaryData.LastSalePrice)
+	if err != nil {
+		return marketQuote{}, err
+	}
+	return marketQuote{Symbol: symbol, Price: price, Currency: "USD"}, nil
+}
+
+func (p *publicMarketProvider) cryptoQuote(ctx context.Context, symbol string) (marketQuote, error) {
+	var payload struct {
+		Data struct {
+			Amount   string `json:"amount"`
+			Currency string `json:"currency"`
+		} `json:"data"`
+	}
+	endpoint := "https://api.coinbase.com/v2/prices/" + url.PathEscape(symbol) + "-USD/spot"
+	if err := p.getJSON(ctx, endpoint, &payload); err != nil {
+		return marketQuote{}, err
+	}
+	price, err := parsePrice(payload.Data.Amount)
 	if err != nil {
 		return marketQuote{}, err
 	}
@@ -213,29 +251,41 @@ func (a *app) searchAssets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, results)
 }
 func (a *app) refreshMarketData(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(`SELECT symbol,market FROM assets WHERE EXISTS(SELECT 1 FROM transactions t WHERE t.symbol=assets.symbol)`)
+	rows, err := a.db.Query(`SELECT symbol,market,asset_type FROM assets WHERE EXISTS(SELECT 1 FROM transactions t WHERE t.symbol=assets.symbol)`)
 	if err != nil {
 		fail(w, err, 500)
 		return
 	}
-	symbols := []string{}
+	type refreshTarget struct{ symbol, assetType string }
+	symbols := []refreshTarget{}
+	skipped := []string{}
 	for rows.Next() {
-		var symbol, market string
-		if err := rows.Scan(&symbol, &market); err != nil {
+		var symbol, market, assetType string
+		if err := rows.Scan(&symbol, &market, &assetType); err != nil {
 			rows.Close()
 			fail(w, err, 500)
 			return
 		}
+		if assetType == "warrant" {
+			skipped = append(skipped, symbol)
+			continue
+		}
 		if market == "TW" && !strings.Contains(symbol, ".") {
 			symbol += ".TW"
 		}
-		symbols = append(symbols, symbol)
+		symbols = append(symbols, refreshTarget{symbol, assetType})
 	}
 	rows.Close()
 	updated := 0
 	failures := []string{}
-	for _, symbol := range symbols {
-		quote, err := a.market.Quote(r.Context(), symbol)
+	for _, target := range symbols {
+		symbol := target.symbol
+		var quote marketQuote
+		if provider, ok := a.market.(assetQuoteProvider); ok {
+			quote, err = provider.QuoteAsset(r.Context(), symbol, target.assetType)
+		} else {
+			quote, err = a.market.Quote(r.Context(), symbol)
+		}
 		if err != nil {
 			failures = append(failures, symbol)
 			continue
@@ -263,7 +313,7 @@ func (a *app) refreshMarketData(w http.ResponseWriter, r *http.Request) {
 	_, _ = a.db.Exec(`INSERT INTO settings(key,value) VALUES('last_refresh',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, now)
 	_ = a.recordSnapshot()
 	triggered, _ := a.checkAlerts(r.Context(), false)
-	writeJSON(w, map[string]any{"updated": updated, "failed": failures, "usdTwd": fx.Price, "updatedAt": now, "alertsTriggered": triggered})
+	writeJSON(w, map[string]any{"updated": updated, "failed": failures, "skipped": skipped, "usdTwd": fx.Price, "updatedAt": now, "alertsTriggered": triggered})
 }
 func (a *app) updateBaseCurrency(w http.ResponseWriter, r *http.Request) {
 	var body struct {

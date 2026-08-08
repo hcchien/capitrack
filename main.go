@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ type transaction struct {
 	Symbol           string  `json:"symbol"`
 	Name             string  `json:"name"`
 	Type             string  `json:"type"`
+	PositionAction   string  `json:"positionAction,omitempty"`
 	Quantity         float64 `json:"quantity"`
 	Price            float64 `json:"price"`
 	Fee              float64 `json:"fee"`
@@ -61,10 +63,13 @@ type holding struct {
 	UnderlyingSymbol string  `json:"underlyingSymbol,omitempty"`
 	WarrantType      string  `json:"warrantType,omitempty"`
 	ExpiryDate       string  `json:"expiryDate,omitempty"`
+	StrikePrice      float64 `json:"strikePrice,omitempty"`
+	ExerciseRatio    float64 `json:"exerciseRatio,omitempty"`
 }
 
 type portfolioSummary struct {
 	TotalValue        float64 `json:"totalValue"`
+	TotalCash         float64 `json:"totalCash"`
 	TotalLiabilities  float64 `json:"totalLiabilities"`
 	NetWorth          float64 `json:"netWorth"`
 	TotalCost         float64 `json:"totalCost"`
@@ -117,6 +122,12 @@ func main() {
 	mux.HandleFunc("GET /api/markets/search", a.searchAssets)
 	mux.HandleFunc("POST /api/markets/refresh", a.refreshMarketData)
 	mux.HandleFunc("PUT /api/settings/base-currency", a.updateBaseCurrency)
+	mux.HandleFunc("GET /api/cash-accounts", a.listCashAccounts)
+	mux.HandleFunc("POST /api/cash-accounts", a.createCashAccount)
+	mux.HandleFunc("DELETE /api/cash-accounts/{id}", a.deleteCashAccount)
+	mux.HandleFunc("GET /api/cash-transactions", a.listCashTransactions)
+	mux.HandleFunc("POST /api/cash-transactions", a.createCashTransaction)
+	mux.HandleFunc("DELETE /api/cash-transactions/{id}", a.deleteCashTransaction)
 	mux.HandleFunc("GET /api/liabilities", a.listLiabilities)
 	mux.HandleFunc("POST /api/liabilities", a.createLiability)
 	mux.HandleFunc("PUT /api/liabilities/{id}", a.updateLiability)
@@ -166,6 +177,16 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_symbol_date ON transactions(symbol, traded_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS cash_accounts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, currency TEXT NOT NULL CHECK(currency IN ('TWD','USD')),
+			initial_balance REAL NOT NULL DEFAULT 0 CHECK(initial_balance >= 0), note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS cash_transactions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL REFERENCES cash_accounts(id) ON DELETE CASCADE,
+			type TEXT NOT NULL CHECK(type IN ('deposit','withdrawal','dividend','interest','fee','adjustment')),
+			amount REAL NOT NULL CHECK(amount > 0), traded_at TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cash_transactions_account_date ON cash_transactions(account_id, traded_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS settings (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -188,6 +209,16 @@ func migrate(db *sql.DB) error {
 			pnl_twd REAL NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_asset_performance_snapshot ON asset_performance_snapshots(snapshot_id,symbol)`,
+		`CREATE TABLE IF NOT EXISTS position_lots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			symbol TEXT NOT NULL REFERENCES assets(symbol) ON UPDATE CASCADE,
+			acquired_at TEXT NOT NULL,
+			quantity REAL NOT NULL CHECK(quantity > 0),
+			unit_cost REAL NOT NULL CHECK(unit_cost >= 0),
+			source TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_position_lots_symbol_date ON position_lots(symbol, acquired_at)`,
 		`CREATE TABLE IF NOT EXISTS price_alerts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			symbol TEXT NOT NULL REFERENCES assets(symbol) ON UPDATE CASCADE,
@@ -250,6 +281,9 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if err := ensureColumn(db, "transactions", "position_action", `ALTER TABLE transactions ADD COLUMN position_action TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -294,9 +328,11 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 		price                                      float64
 		market, currency                           string
 		assetType, underlying, warrantType, expiry string
+		strikePrice                                float64
+		exerciseRatio                              float64
 	}
 	assets := map[string]assetMeta{}
-	rows, err := a.db.Query(`SELECT symbol, current_price, market, currency,asset_type,underlying_symbol,warrant_type,expiry_date FROM assets`)
+	rows, err := a.db.Query(`SELECT symbol, current_price, market, currency,asset_type,underlying_symbol,warrant_type,expiry_date,strike_price,exercise_ratio FROM assets`)
 	if err != nil {
 		return portfolioResult{}, err
 	}
@@ -305,14 +341,35 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 		var s string
 		var p float64
 		var market, currency, assetType, underlying, warrantType, expiry string
-		_ = rows.Scan(&s, &p, &market, &currency, &assetType, &underlying, &warrantType, &expiry)
-		assets[s] = assetMeta{p, market, currency, assetType, underlying, warrantType, expiry}
+		var strikePrice, ratio float64
+		_ = rows.Scan(&s, &p, &market, &currency, &assetType, &underlying, &warrantType, &expiry, &strikePrice, &ratio)
+		assets[s] = assetMeta{p, market, currency, assetType, underlying, warrantType, expiry, strikePrice, ratio}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return portfolioResult{}, err
 	}
 	rows.Close()
+	type lotBasis struct{ quantity, cost float64 }
+	lotBasisBySymbol := map[string]lotBasis{}
+	lotRows, err := a.db.Query(`SELECT symbol,SUM(quantity),SUM(quantity*unit_cost) FROM position_lots GROUP BY symbol`)
+	if err != nil {
+		return portfolioResult{}, err
+	}
+	for lotRows.Next() {
+		var symbol string
+		var basis lotBasis
+		if err := lotRows.Scan(&symbol, &basis.quantity, &basis.cost); err != nil {
+			lotRows.Close()
+			return portfolioResult{}, err
+		}
+		lotBasisBySymbol[symbol] = basis
+	}
+	if err := lotRows.Err(); err != nil {
+		lotRows.Close()
+		return portfolioResult{}, err
+	}
+	lotRows.Close()
 	baseCurrency, usdTwd, lastUpdated, err := a.portfolioSettings()
 	if err != nil {
 		return portfolioResult{}, err
@@ -335,11 +392,34 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 		h := bySymbol[t.Symbol]
 		if h == nil {
 			meta := assets[t.Symbol]
-			h = &holding{Symbol: t.Symbol, Name: t.Name, CurrentPrice: meta.price, Market: meta.market, Currency: meta.currency, AssetType: meta.assetType, UnderlyingSymbol: meta.underlying, WarrantType: meta.warrantType, ExpiryDate: meta.expiry}
+			h = &holding{Symbol: t.Symbol, Name: t.Name, CurrentPrice: meta.price, Market: meta.market, Currency: meta.currency, AssetType: meta.assetType, UnderlyingSymbol: meta.underlying, WarrantType: meta.warrantType, ExpiryDate: meta.expiry, StrikePrice: meta.strikePrice, ExerciseRatio: meta.exerciseRatio}
 			bySymbol[t.Symbol] = h
 		}
-		if t.Type == "buy" {
-			h.CostBasis += t.Quantity*t.Price + t.Fee
+		action := t.PositionAction
+		multiplier := 1.0
+		if h.AssetType == "warrant" && h.ExerciseRatio > 0 {
+			multiplier = h.ExerciseRatio
+		}
+		if action == "" {
+			action = t.Type + "_open"
+		}
+		if h.AssetType == "warrant" && action == "sell_open" {
+			h.CostBasis -= t.Quantity*t.Price*multiplier - t.Fee
+			h.Quantity -= t.Quantity
+		} else if h.AssetType == "warrant" && action == "buy_close" {
+			covered := min(t.Quantity, -h.Quantity)
+			avg := 0.0
+			if h.Quantity < 0 {
+				avg = h.CostBasis / h.Quantity
+			}
+			h.Realized += covered*avg - covered*t.Price*multiplier - t.Fee
+			h.CostBasis += covered * avg
+			h.Quantity += covered
+			if h.Quantity > -0.00000001 {
+				h.Quantity, h.CostBasis = 0, 0
+			}
+		} else if action == "buy_open" {
+			h.CostBasis += t.Quantity*t.Price*multiplier + t.Fee
 			h.Quantity += t.Quantity
 		} else {
 			avg := 0.0
@@ -347,7 +427,7 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 				avg = h.CostBasis / h.Quantity
 			}
 			sold := min(t.Quantity, h.Quantity)
-			h.Realized += sold*t.Price - t.Fee - sold*avg
+			h.Realized += sold*t.Price*multiplier - t.Fee - sold*avg
 			h.CostBasis -= sold * avg
 			h.Quantity -= sold
 			if h.Quantity < 0.00000001 {
@@ -358,9 +438,16 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 	holdings := make([]holding, 0)
 	totalValue, totalCost, totalRealized := 0.0, 0.0, 0.0
 	for _, h := range bySymbol {
-		if h.Quantity > 0 {
+		if h.Quantity != 0 {
+			if basis, ok := lotBasisBySymbol[h.Symbol]; ok && math.Abs(basis.quantity-h.Quantity) < 0.000001 {
+				h.CostBasis = basis.cost
+			}
 			h.AverageCost = h.CostBasis / h.Quantity
-			localValue := h.Quantity * h.CurrentPrice
+			multiplier := 1.0
+			if h.AssetType == "warrant" && h.ExerciseRatio > 0 {
+				multiplier = h.ExerciseRatio
+			}
+			localValue := h.Quantity * h.CurrentPrice * multiplier
 			localCost := h.CostBasis
 			localUnrealized := localValue - localCost
 			if localCost != 0 {
@@ -389,8 +476,17 @@ func (a *app) calculatePortfolio() (portfolioResult, error) {
 	for _, item := range liabilities {
 		totalLiabilities += item.BalanceBase
 	}
+	cashAccounts, err := a.calculateCashAccounts(baseCurrency, usdTwd)
+	if err != nil {
+		return portfolioResult{}, err
+	}
+	totalCash := 0.0
+	for _, item := range cashAccounts {
+		totalCash += item.BalanceBase
+	}
+	totalValue += totalCash
 	return portfolioResult{Holdings: holdings, Summary: portfolioSummary{
-		TotalValue: totalValue, TotalLiabilities: totalLiabilities, NetWorth: totalValue - totalLiabilities, TotalCost: totalCost, Unrealized: totalValue - totalCost,
+		TotalValue: totalValue, TotalCash: totalCash, TotalLiabilities: totalLiabilities, NetWorth: totalValue - totalLiabilities, TotalCost: totalCost, Unrealized: totalValue - totalCost,
 		UnrealizedPercent: percent(totalValue-totalCost, totalCost), Realized: totalRealized,
 	}, BaseCurrency: baseCurrency, USDTWD: usdTwd, LastUpdated: lastUpdated}, rows.Err()
 }
@@ -423,7 +519,7 @@ func (a *app) listTransactions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) queryTransactions(symbol, from, to string) ([]transaction, error) {
-	query := `SELECT t.id, t.symbol, a.name, t.type, t.quantity, t.price, t.fee, t.traded_at, t.note, t.created_at, a.market, a.currency,a.asset_type,a.underlying_symbol,a.warrant_type,a.expiry_date,a.strike_price,a.exercise_ratio
+	query := `SELECT t.id, t.symbol, a.name, t.type, t.position_action, t.quantity, t.price, t.fee, t.traded_at, t.note, t.created_at, a.market, a.currency,a.asset_type,a.underlying_symbol,a.warrant_type,a.expiry_date,a.strike_price,a.exercise_ratio
 		FROM transactions t JOIN assets a ON a.symbol=t.symbol WHERE 1=1`
 	args := []any{}
 	if symbol != "" {
@@ -447,7 +543,7 @@ func (a *app) queryTransactions(symbol, from, to string) ([]transaction, error) 
 	result := []transaction{}
 	for rows.Next() {
 		var t transaction
-		if err := rows.Scan(&t.ID, &t.Symbol, &t.Name, &t.Type, &t.Quantity, &t.Price, &t.Fee, &t.TradedAt, &t.Note, &t.CreatedAt, &t.Market, &t.Currency, &t.AssetType, &t.UnderlyingSymbol, &t.WarrantType, &t.ExpiryDate, &t.StrikePrice, &t.ExerciseRatio); err != nil {
+		if err := rows.Scan(&t.ID, &t.Symbol, &t.Name, &t.Type, &t.PositionAction, &t.Quantity, &t.Price, &t.Fee, &t.TradedAt, &t.Note, &t.CreatedAt, &t.Market, &t.Currency, &t.AssetType, &t.UnderlyingSymbol, &t.WarrantType, &t.ExpiryDate, &t.StrikePrice, &t.ExerciseRatio); err != nil {
 			return nil, err
 		}
 		result = append(result, t)
@@ -476,7 +572,7 @@ func (a *app) createTransaction(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, 500)
 		return
 	}
-	result, err := tx.Exec(`INSERT INTO transactions(symbol,type,quantity,price,fee,traded_at,note) VALUES(?,?,?,?,?,?,?)`, t.Symbol, t.Type, t.Quantity, t.Price, t.Fee, t.TradedAt, t.Note)
+	result, err := tx.Exec(`INSERT INTO transactions(symbol,type,position_action,quantity,price,fee,traded_at,note) VALUES(?,?,?,?,?,?,?,?)`, t.Symbol, t.Type, t.PositionAction, t.Quantity, t.Price, t.Fee, t.TradedAt, t.Note)
 	if err != nil {
 		fail(w, err, 500)
 		return
@@ -516,7 +612,7 @@ func (a *app) updateTransaction(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, 500)
 		return
 	}
-	result, err := tx.Exec(`UPDATE transactions SET symbol=?,type=?,quantity=?,price=?,fee=?,traded_at=?,note=? WHERE id=?`, t.Symbol, t.Type, t.Quantity, t.Price, t.Fee, t.TradedAt, t.Note, id)
+	result, err := tx.Exec(`UPDATE transactions SET symbol=?,type=?,position_action=?,quantity=?,price=?,fee=?,traded_at=?,note=? WHERE id=?`, t.Symbol, t.Type, t.PositionAction, t.Quantity, t.Price, t.Fee, t.TradedAt, t.Note, id)
 	if err != nil {
 		fail(w, err, 500)
 		return
@@ -629,13 +725,13 @@ func (a *app) portfolioHistory(w http.ResponseWriter, r *http.Request) {
 func (a *app) getPortfolioHistory(requestedRange string) (portfolioHistoryResult, error) {
 	rangeName := strings.ToUpper(requestedRange)
 	days := map[string]int{"7D": 7, "1M": 30, "3M": 90}
-	query := `SELECT captured_at,total_twd,usd_twd FROM portfolio_snapshots`
+	query := `SELECT s.captured_at,s.total_twd,s.usd_twd FROM portfolio_snapshots s JOIN (SELECT substr(captured_at,1,10) AS snapshot_day,MAX(captured_at) AS latest_captured_at FROM portfolio_snapshots`
 	args := []any{}
 	if dayCount, ok := days[rangeName]; ok {
 		query += ` WHERE captured_at>=?`
 		args = append(args, time.Now().AddDate(0, 0, -dayCount).Format(time.RFC3339))
 	}
-	query += ` ORDER BY captured_at ASC`
+	query += ` GROUP BY snapshot_day) daily ON s.captured_at=daily.latest_captured_at ORDER BY s.captured_at ASC`
 	baseCurrency, _, _, err := a.portfolioSettings()
 	if err != nil {
 		return portfolioHistoryResult{}, err
@@ -669,6 +765,7 @@ func validate(t *transaction) error {
 	t.Market = strings.ToUpper(strings.TrimSpace(t.Market))
 	t.Currency = strings.ToUpper(strings.TrimSpace(t.Currency))
 	t.AssetType = strings.ToLower(strings.TrimSpace(t.AssetType))
+	t.PositionAction = strings.ToLower(strings.TrimSpace(t.PositionAction))
 	if t.AssetType == "" {
 		t.AssetType = "stock"
 	}
@@ -697,10 +794,22 @@ func validate(t *transaction) error {
 	if t.Currency != "TWD" && t.Currency != "USD" {
 		return errors.New("幣別必須是台幣或美金")
 	}
-	if t.AssetType != "stock" && t.AssetType != "warrant" {
-		return errors.New("投資類型必須是股票或權證")
+	if t.AssetType != "stock" && t.AssetType != "etf" && t.AssetType != "warrant" {
+		return errors.New("投資類型必須是股票、ETF 或權證")
 	}
 	if t.AssetType == "warrant" {
+		if t.PositionAction == "" {
+			t.PositionAction = t.Type + "_open"
+		}
+		validActions := map[string]bool{"buy_open": true, "sell_open": true, "buy_close": true, "sell_close": true}
+		if !validActions[t.PositionAction] {
+			return errors.New("權證部位動作不正確")
+		}
+		if strings.HasPrefix(t.PositionAction, "buy") {
+			t.Type = "buy"
+		} else {
+			t.Type = "sell"
+		}
 		if t.Market != "US" || t.Currency != "USD" {
 			return errors.New("目前權證交易僅支援美股與美金")
 		}

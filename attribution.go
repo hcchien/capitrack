@@ -37,18 +37,24 @@ func (a *app) assetPerformanceTWD(usdTwd float64) ([]assetPerformance, error) {
 	type state struct {
 		name, currency                  string
 		quantity, cost, realized, price float64
+		multiplier                      float64
 	}
 	states := map[string]*state{}
-	rows, err := a.db.Query(`SELECT symbol,name,currency,current_price FROM assets`)
+	rows, err := a.db.Query(`SELECT symbol,name,currency,current_price,asset_type,exercise_ratio FROM assets`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
-		var symbol string
+		var symbol, assetType string
 		var s state
-		if err := rows.Scan(&symbol, &s.name, &s.currency, &s.price); err != nil {
+		var ratio float64
+		if err := rows.Scan(&symbol, &s.name, &s.currency, &s.price, &assetType, &ratio); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		s.multiplier = 1
+		if assetType == "warrant" && ratio > 0 {
+			s.multiplier = ratio
 		}
 		states[symbol] = &s
 	}
@@ -56,11 +62,30 @@ func (a *app) assetPerformanceTWD(usdTwd float64) ([]assetPerformance, error) {
 	for _, t := range txs {
 		s := states[t.Symbol]
 		if s == nil {
-			s = &state{name: t.Name, currency: t.Currency}
+			s = &state{name: t.Name, currency: t.Currency, multiplier: 1}
 			states[t.Symbol] = s
 		}
-		if t.Type == "buy" {
-			s.cost += t.Quantity*t.Price + t.Fee
+		action := t.PositionAction
+		if action == "" {
+			action = t.Type + "_open"
+		}
+		if action == "sell_open" {
+			s.cost -= t.Quantity*t.Price*s.multiplier - t.Fee
+			s.quantity -= t.Quantity
+		} else if action == "buy_close" {
+			covered := min(t.Quantity, -s.quantity)
+			avg := 0.0
+			if s.quantity < 0 {
+				avg = s.cost / s.quantity
+			}
+			s.realized += covered*avg - covered*t.Price*s.multiplier - t.Fee
+			s.cost += covered * avg
+			s.quantity += covered
+			if s.quantity > -.00000001 {
+				s.quantity, s.cost = 0, 0
+			}
+		} else if action == "buy_open" {
+			s.cost += t.Quantity*t.Price*s.multiplier + t.Fee
 			s.quantity += t.Quantity
 		} else {
 			avg := 0.0
@@ -68,7 +93,7 @@ func (a *app) assetPerformanceTWD(usdTwd float64) ([]assetPerformance, error) {
 				avg = s.cost / s.quantity
 			}
 			sold := min(t.Quantity, s.quantity)
-			s.realized += sold*t.Price - t.Fee - sold*avg
+			s.realized += sold*t.Price*s.multiplier - t.Fee - sold*avg
 			s.cost -= sold * avg
 			s.quantity -= sold
 			if s.quantity < .00000001 {
@@ -79,7 +104,7 @@ func (a *app) assetPerformanceTWD(usdTwd float64) ([]assetPerformance, error) {
 	}
 	result := []assetPerformance{}
 	for symbol, s := range states {
-		pnl := s.realized + s.quantity*s.price - s.cost
+		pnl := s.realized + s.quantity*s.price*s.multiplier - s.cost
 		if s.currency == "USD" {
 			pnl *= usdTwd
 		}

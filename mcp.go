@@ -21,6 +21,7 @@ type transactionInput struct {
 	Symbol           string  `json:"symbol" jsonschema:"投資標的代號，例如 2330 或 AAPL"`
 	Name             string  `json:"name" jsonschema:"投資標的名稱"`
 	Type             string  `json:"type" jsonschema:"交易類型，只能是 buy 或 sell"`
+	PositionAction   string  `json:"positionAction,omitempty" jsonschema:"權證部位動作：buy_open、sell_open、buy_close 或 sell_close"`
 	Quantity         float64 `json:"quantity" jsonschema:"交易數量，必須大於 0"`
 	Price            float64 `json:"price" jsonschema:"每單位成交價格"`
 	Fee              float64 `json:"fee,omitempty" jsonschema:"交易手續費"`
@@ -150,7 +151,7 @@ func (a *app) newMCPServer() *mcp.Server {
 		Name: "add_transaction", Description: "新增一筆買入或賣出交易；持股、成本與損益會自動重新計算。",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input transactionInput) (*mcp.CallToolResult, mutationOutput, error) {
-		t := transaction{Symbol: input.Symbol, Name: input.Name, Type: input.Type, Quantity: input.Quantity, Price: input.Price, Fee: input.Fee, TradedAt: input.TradedAt, Note: input.Note, Market: input.Market, Currency: input.Currency, AssetType: input.AssetType, UnderlyingSymbol: input.UnderlyingSymbol, WarrantType: input.WarrantType, ExpiryDate: input.ExpiryDate, StrikePrice: input.StrikePrice, ExerciseRatio: input.ExerciseRatio}
+		t := transaction{Symbol: input.Symbol, Name: input.Name, Type: input.Type, PositionAction: input.PositionAction, Quantity: input.Quantity, Price: input.Price, Fee: input.Fee, TradedAt: input.TradedAt, Note: input.Note, Market: input.Market, Currency: input.Currency, AssetType: input.AssetType, UnderlyingSymbol: input.UnderlyingSymbol, WarrantType: input.WarrantType, ExpiryDate: input.ExpiryDate, StrikePrice: input.StrikePrice, ExerciseRatio: input.ExerciseRatio}
 		if err := a.insertTransaction(&t); err != nil {
 			return nil, mutationOutput{}, err
 		}
@@ -315,7 +316,7 @@ func (a *app) insertTransaction(t *transaction) error {
 	if err != nil {
 		return err
 	}
-	result, err := tx.Exec(`INSERT INTO transactions(symbol,type,quantity,price,fee,traded_at,note) VALUES(?,?,?,?,?,?,?)`, t.Symbol, t.Type, t.Quantity, t.Price, t.Fee, t.TradedAt, t.Note)
+	result, err := tx.Exec(`INSERT INTO transactions(symbol,type,position_action,quantity,price,fee,traded_at,note) VALUES(?,?,?,?,?,?,?,?)`, t.Symbol, t.Type, t.PositionAction, t.Quantity, t.Price, t.Fee, t.TradedAt, t.Note)
 	if err != nil {
 		return err
 	}

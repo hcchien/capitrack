@@ -1,0 +1,48 @@
+#transactions .table-card { overflow-x: auto; }
+#transactions table { min-width: 900px; table-layout: fixed; }
+#transactions th:nth-child(1), #transactions td:nth-child(1) { width: 112px; white-space: nowrap; }
+#transactions th:nth-child(3), #transactions td:nth-child(3) { width: 72px; white-space: nowrap; }
+#transactions th:nth-child(4), #transactions td:nth-child(4) { width: 88px; text-align: right; white-space: nowrap; }
+#transactions th:nth-child(5), #transactions td:nth-child(5) { width: 118px; text-align: right; white-space: nowrap; }
+#transactions th:nth-child(6), #transactions td:nth-child(6) { width: 138px; text-align: right; white-space: nowrap; }
+#transactions th:nth-child(7), #transactions td:nth-child(7) { width: 72px; white-space: nowrap; }
+#transactions td:nth-child(2) { overflow: hidden; }
+#transactions td:nth-child(2) small { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.holdings-section { margin: 34px 0 42px; }
+.holdings-section .section-heading { margin: 0 0 18px; }
+.section-meta { display: flex; align-items: baseline; gap: 12px; }
+.section-total { font: 600 13px var(--mono); color: var(--green); white-space: nowrap; }
+.holdings-table { overflow-x: auto; }
+.holdings-table table { min-width: 970px; }
+.holdings-table th:nth-child(n+2), .holdings-table td:nth-child(n+2) { text-align: right; white-space: nowrap; }
+.holdings-table th:first-child { width: 28%; }
+.holdings-table td:first-child small { color: var(--muted); }
+.holdings-table td.positive-text { color: var(--green); }
+.holdings-table td.negative-text { color: var(--red); }
+.holdings-table td.positive-text small, .holdings-table td.negative-text small { color: inherit; }
+
+.chart-period { margin: 0 0 5px; color: var(--muted); font: 10px var(--mono); }
+.attribution-toggle { white-space: nowrap; }
+
+.warrants-section { margin: 0 0 42px; }
+.warrants-section .section-heading { margin: 0 0 18px; }
+.warrants-table { overflow-x: auto; }
+.warrants-table table { min-width: 820px; }
+.warrants-table th:nth-child(n+2), .warrants-table td:nth-child(n+2) { text-align: right; white-space: nowrap; }
+.warrants-table td:first-child small { color: var(--muted); font: 10px var(--mono); }
+.crypto-section { margin: 0 0 42px; }
+.crypto-section .section-heading { margin: 0 0 18px; }
+.cash-overview-section { margin: 0 0 42px; }
+.cash-overview-section .section-heading { margin: 0 0 18px; }
+.cash-overview-table th:nth-child(n+2), .cash-overview-table td:nth-child(n+2) { white-space: nowrap; }
+.cash-overview-table th:nth-child(n+2), .cash-overview-table td:nth-child(2), .cash-overview-table td:nth-child(3), .cash-overview-table td:nth-child(4) { text-align: right; }
+.liability-overview-section { margin: 0 0 42px; }
+.liability-overview-section .section-heading { margin: 0 0 18px; }
+.liability-overview-table th:nth-child(n+2), .liability-overview-table td:nth-child(n+2) { text-align: right; white-space: nowrap; }
+
+.filterbar { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(150px, 180px) minmax(150px, 180px) auto; align-items: end; }
+.filterbar label { min-width: 0; }
+.filterbar select, .filterbar input { width: 100%; min-width: 0; }
+.filterbar button { white-space: nowrap; }
+@media (max-width: 760px) { .filterbar { grid-template-columns: 1fr; } .filterbar button { width: 100%; } }
