@@ -113,6 +113,54 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestValidateUSWarrant(t *testing.T) {
+	tx := transaction{Symbol: "AAPLW", Name: "Apple Warrant", AssetType: "warrant", Market: "US", Currency: "USD", UnderlyingSymbol: "AAPL", WarrantType: "call", ExpiryDate: "2027-12-17", StrikePrice: 200, ExerciseRatio: 1, Type: "buy", Quantity: 10, Price: 5, TradedAt: "2026-08-08"}
+	if err := validate(&tx); err != nil {
+		t.Fatal(err)
+	}
+	tx.Market = "TW"
+	if err := validate(&tx); err == nil {
+		t.Fatal("expected non-US warrant to be rejected")
+	}
+}
+
+func TestTrailingStopRaisesTriggerWithNewHigh(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{db: db}
+	tx := transaction{Symbol: "QQQ", Name: "Invesco QQQ", Market: "US", Currency: "USD", Type: "buy", Quantity: 1, Price: 600, TradedAt: "2026-08-08"}
+	if err := a.insertTransaction(&tx); err != nil {
+		t.Fatal(err)
+	}
+	alert, err := a.addAlert(alertInput{Symbol: "QQQ", RuleType: "trailing_stop_pct", Value: 15, OneShot: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alert.TriggerPrice != 510 {
+		t.Fatalf("expected initial trigger 510, got %v", alert.TriggerPrice)
+	}
+	_, _ = db.Exec(`UPDATE assets SET current_price=700 WHERE symbol='QQQ'`)
+	if count, err := a.checkAlerts(context.Background(), false); err != nil || count != 0 {
+		t.Fatalf("unexpected new-high check: count=%d err=%v", count, err)
+	}
+	var trigger float64
+	_ = db.QueryRow(`SELECT trigger_price FROM price_alerts WHERE id=?`, alert.ID).Scan(&trigger)
+	if trigger != 595 {
+		t.Fatalf("expected raised trigger 595, got %v", trigger)
+	}
+	_, _ = db.Exec(`UPDATE assets SET current_price=595 WHERE symbol='QQQ'`)
+	if count, err := a.checkAlerts(context.Background(), false); err != nil || count != 1 {
+		t.Fatalf("expected one trigger: count=%d err=%v", count, err)
+	}
+}
+
 func TestPortfolioConvertsCurrencies(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

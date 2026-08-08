@@ -18,6 +18,7 @@
         <button class="nav-item active" data-view="overview"><span>⌂</span>投資總覽</button>
         <button class="nav-item" data-view="transactions"><span>↕</span>交易紀錄</button>
         <button class="nav-item" data-view="review"><span>◎</span>投資 Review</button>
+        <button class="nav-item" data-view="alerts"><span>◉</span>價格提醒</button>
       </nav>
       <div class="privacy"><span class="status-dot"></span><div><strong>只存在這台電腦</strong><small>資料儲存於本機 SQLite</small></div></div>
     </aside>
@@ -83,6 +84,11 @@
         <div class="review-intro"><p class="eyebrow">DECISION REVIEW</p><h2>回頭看，每一筆選擇。</h2><p>用時間與標的重新閱讀自己的投資決策，而不只看最終漲跌。</p></div>
         <div id="reviewList" class="review-list"></div>
       </section>
+      <section id="alerts" class="view">
+        <div class="alert-toolbar"><div><p class="eyebrow">PRICE ALERTS</p><h2>價格提醒</h2><p>伺服器運行時每 5 分鐘檢查；移動停損只會隨新高往上調整。</p></div><div class="top-actions"><button class="secondary" id="enableNotifications">允許系統通知</button><button class="secondary" id="checkAlerts">立即檢查</button><button class="primary" id="addAlert">＋ 新增提醒</button></div></div>
+        <div class="section-heading"><div><p class="eyebrow">ACTIVE RULES</p><h3>提醒規則</h3></div></div><div id="alertList" class="alert-list"></div>
+        <div class="section-heading"><div><p class="eyebrow">TRIGGER HISTORY</p><h3>觸發紀錄</h3></div></div><div id="alertEvents" class="alert-list"></div>
+      </section>
     </main>
   </div>
 
@@ -92,10 +98,12 @@
       <input type="hidden" id="tradeId">
       <div class="type-toggle"><label><input type="radio" name="type" value="buy" checked><span>買入</span></label><label><input type="radio" name="type" value="sell"><span>賣出</span></label></div>
       <div class="form-grid">
+        <label>投資類型<select id="assetType"><option value="stock">股票／ETF</option><option value="warrant">美股權證</option></select></label>
         <label>市場<select id="market" required><option value="TW">台股</option><option value="US">美股</option></select></label>
         <label>交易幣別<select id="currency" required><option value="TWD">TWD 台幣</option><option value="USD">USD 美金</option></select></label>
         <label class="full ticker-field">搜尋股票代號或名稱<input id="symbol" required autocomplete="off" placeholder="例如：2330、台積電、AAPL"><span class="field-hint">輸入後會自動搜尋 ticker 與公司名稱</span><div id="tickerResults" class="autocomplete" hidden></div></label>
         <label class="full">名稱<input id="name" required placeholder="選擇搜尋結果後自動帶入"></label>
+        <div id="warrantFields" class="full warrant-fields" hidden><label>連結標的<input id="underlyingSymbol" placeholder="例如 AAPL"></label><label>權證類型<select id="warrantType"><option value="call">Call</option><option value="put">Put</option></select></label><label>到期日<input id="expiryDate" type="date"></label><label>履約價<input id="strikePrice" type="number" min="0" step="any"></label><label>行使比例<input id="exerciseRatio" type="number" min="0" step="any" placeholder="例如 1"></label></div>
         <label>數量<input id="quantity" required type="number" min="0.000001" step="any" placeholder="0"></label>
         <label>每單位價格<input id="price" required type="number" min="0" step="any" placeholder="0"></label>
         <label>交易日期<input id="tradedAt" required type="date"></label>
@@ -105,6 +113,7 @@
       <div class="dialog-actions"><button type="button" class="secondary" id="cancelDialog">取消</button><button type="submit" class="primary">儲存交易</button></div>
     </form>
   </dialog>
+  <dialog id="alertDialog"><form id="alertForm"><div class="dialog-head"><div><p class="eyebrow">PRICE ALERT</p><h2>新增提醒</h2></div><button type="button" class="icon-button" id="closeAlertDialog">×</button></div><div class="form-grid"><label class="full">投資標的<select id="alertSymbol" required></select></label><label class="full">條件<select id="alertRule"><option value="price_below">價格跌到指定值（購入提醒）</option><option value="price_above">價格漲到指定值</option><option value="cost_loss_pct">成本停損比例</option><option value="cost_profit_pct">成本停利比例</option><option value="trailing_stop_pct">移動停損比例</option></select></label><label class="full"><span id="alertValueLabel">目標價格</span><input id="alertValue" type="number" min="0.000001" step="any" required></label><label class="full check-label"><input id="alertOneShot" type="checkbox" checked> 觸發一次後停用</label></div><div class="dialog-actions"><button type="button" class="secondary" id="cancelAlertDialog">取消</button><button type="submit" class="primary">建立提醒</button></div></form></dialog>
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>

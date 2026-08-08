@@ -14,10 +14,11 @@ import (
 )
 
 type marketSearchResult struct {
-	Symbol   string `json:"symbol"`
-	Name     string `json:"name"`
-	Market   string `json:"market"`
-	Currency string `json:"currency"`
+	Symbol    string `json:"symbol"`
+	Name      string `json:"name"`
+	Market    string `json:"market"`
+	Currency  string `json:"currency"`
+	AssetType string `json:"assetType"`
 }
 type marketQuote struct {
 	Symbol   string  `json:"symbol"`
@@ -67,10 +68,14 @@ func (p *publicMarketProvider) Search(ctx context.Context, query, market string)
 	}
 	results := []marketSearchResult{}
 	for _, item := range payload.Data {
-		if item.Asset != "STOCKS" && item.Asset != "ETF" {
+		if item.Asset != "STOCKS" && item.Asset != "ETF" && item.Asset != "WARRANTS" {
 			continue
 		}
-		results = append(results, marketSearchResult{Symbol: item.Symbol, Name: strings.TrimSpace(item.Name), Market: "US", Currency: "USD"})
+		assetType := "stock"
+		if item.Asset == "WARRANTS" {
+			assetType = "warrant"
+		}
+		results = append(results, marketSearchResult{Symbol: item.Symbol, Name: strings.TrimSpace(item.Name), Market: "US", Currency: "USD", AssetType: assetType})
 		if len(results) == 8 {
 			break
 		}
@@ -97,7 +102,7 @@ func (p *publicMarketProvider) searchTaiwan(ctx context.Context, query string) (
 				if name == "" {
 					name = strings.TrimSpace(c.Name)
 				}
-				p.twStocks = append(p.twStocks, marketSearchResult{Symbol: strings.TrimSpace(c.Code) + source.suffix, Name: name, Market: "TW", Currency: "TWD"})
+				p.twStocks = append(p.twStocks, marketSearchResult{Symbol: strings.TrimSpace(c.Code) + source.suffix, Name: name, Market: "TW", Currency: "TWD", AssetType: "stock"})
 			}
 		}
 	}
@@ -257,7 +262,8 @@ func (a *app) refreshMarketData(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Format(time.RFC3339)
 	_, _ = a.db.Exec(`INSERT INTO settings(key,value) VALUES('last_refresh',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, now)
 	_ = a.recordSnapshot()
-	writeJSON(w, map[string]any{"updated": updated, "failed": failures, "usdTwd": fx.Price, "updatedAt": now})
+	triggered, _ := a.checkAlerts(r.Context(), false)
+	writeJSON(w, map[string]any{"updated": updated, "failed": failures, "usdTwd": fx.Price, "updatedAt": now, "alertsTriggered": triggered})
 }
 func (a *app) updateBaseCurrency(w http.ResponseWriter, r *http.Request) {
 	var body struct {
