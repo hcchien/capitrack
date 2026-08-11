@@ -114,3 +114,16 @@ go run . mcp
 ```
 
 兩種 MCP transport 都會使用網站相同的 `data/capitrack.db`。
+
+## Flutter App
+
+`capitrack_app/` 提供 Android、iOS、macOS 與 Web 的 Flutter 用戶端，涵蓋投資總覽、交易、手動價格、行情同步、現金帳戶與流水、負債與異動，以及價格提醒與觸發紀錄。
+
+先在專案根目錄啟動 Go 服務，再於另一個 terminal 執行：
+
+```bash
+cd capitrack_app
+flutter run
+```
+
+桌面版預設連線至 `http://localhost:8080`。Android emulator 請在 App 的連線設定中改為 `http://10.0.2.2:8080`；實機請填入執行 Go 服務之電腦的區域網路 IP，例如 `http://192.168.1.10:8080`。
